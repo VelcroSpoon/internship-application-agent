@@ -1,0 +1,19 @@
+# Discovery sources for the nightly Scout run.
+#
+# Edit this file, not the code, to add or remove boards. Unknown keys are
+# rejected at load time so a typo fails the run instead of being ignored.
+
+[scout]
+# Sent on every request. Keep a contact address in it; it is the polite thing
+# to do and some hosts block anonymous agents.
+user_agent = "InternshipApplicationAgent/0.1 (+https://github.com/VelcroSpoon/internship-application-agent)"
+
+# Pause between boards. Minimum enforced is 1.0s; this is deliberately slower.
+delay_seconds = 3.0
+
+# Greenhouse boards. `board` is the token in the public URL:
+# https://job-boards.greenhouse.io/<board>/ . `company` overrides the name the
+# API reports, useful when a board token is not a readable name.
+[[scout.greenhouse]]
+board = "scaleai"
+company = "Scale AI"
