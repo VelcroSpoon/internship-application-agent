@@ -384,6 +384,28 @@ def cmd_applications_decide(args: argparse.Namespace, **_: object) -> int:
     return 0
 
 
+# --- serve --------------------------------------------------------------------
+
+
+def cmd_serve(args: argparse.Namespace, **_: object) -> int:
+    import uvicorn
+
+    from internship_agent.api.app import create_app
+
+    app = create_app(
+        db_path=args.db,
+        config_path=args.config,
+        criteria_path=args.criteria,
+        voice_path=args.voice,
+        start_scheduler=not args.no_scheduler,
+    )
+    print(f"serving on http://{args.host}:{args.port}  (docs at /docs)")
+    print(f"  database: {args.db}")
+    print(f"  scheduler: {'off' if args.no_scheduler else 'on (discovery only)'}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
 # --- parser -------------------------------------------------------------------
 
 
@@ -471,6 +493,16 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--id", type=int, required=True)
         sub.add_argument("--note", default="")
         sub.set_defaults(func=cmd_applications_decide)
+
+    serve = groups.add_parser("serve", parents=[common, criteria_opt], help="run the API")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    serve.add_argument("--voice", type=Path, default=DEFAULT_VOICE_PATH)
+    serve.add_argument(
+        "--no-scheduler", action="store_true", help="do not start the nightly discovery job"
+    )
+    serve.set_defaults(func=cmd_serve, command="serve")
 
     drafts = groups.add_parser("drafts", help="inspect drafts").add_subparsers(
         dest="command", required=True

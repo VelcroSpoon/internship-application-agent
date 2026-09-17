@@ -17,3 +17,12 @@ delay_seconds = 3.0
 [[scout.greenhouse]]
 board = "scaleai"
 company = "Scale AI"
+
+[scheduler]
+# The nightly discovery run: scout every board, then screen what is new.
+# Discovery only. Drafting costs money and produces something you have to
+# read, so it never fires on a timer.
+enabled = true
+hour = 3
+minute = 0
+timezone = "America/Toronto"

@@ -46,8 +46,19 @@ class ScoutConfig(_Strict):
     greenhouse: list[GreenhouseBoard] = Field(default_factory=list)
 
 
+class SchedulerConfig(_Strict):
+    """When the nightly discovery run fires. Discovery only: the scheduler
+    never drafts and never submits."""
+
+    enabled: bool = True
+    hour: int = Field(default=3, ge=0, le=23)
+    minute: int = Field(default=0, ge=0, le=59)
+    timezone: str = "America/Toronto"
+
+
 class AppConfig(_Strict):
     scout: ScoutConfig
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AppConfig:
