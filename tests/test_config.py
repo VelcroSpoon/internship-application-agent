@@ -111,3 +111,19 @@ def test_criteria_screener_backend_is_restricted_to_known_values(tmp_path: Path)
 
     with pytest.raises(ValidationError):
         load_criteria(p)
+
+
+def test_hard_disqualifier_patterns_must_compile(tmp_path: Path):
+    from internship_agent.config import load_criteria
+
+    p = tmp_path / "criteria.toml"
+    p.write_text(
+        '[candidate]\nmaster_resume_path = "r.md"\n'
+        '[criteria]\ntarget_cycle = "S"\n'
+        '[[criteria.hard_disqualifiers]]\nlabel = "clearance"\npattern = "(unclosed"\n'
+        '[screener]\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_criteria(p)

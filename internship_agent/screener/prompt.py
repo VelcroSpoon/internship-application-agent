@@ -16,12 +16,13 @@ TRUNCATION_MARKER = "\n[... description truncated ...]"
 
 
 def build_system(criteria: CriteriaConfig) -> str:
+    # Hard disqualifiers are intentionally absent: they are regexes applied in
+    # code. Shown a checklist, a small model copies it into its findings.
     roles = "\n".join(f"- {r}" for r in criteria.target_roles) or "- (any)"
     locations = "\n".join(f"- {loc}" for loc in criteria.acceptable_locations) or "- (any)"
-    disq = "\n".join(f"- {d}" for d in criteria.hard_disqualifiers) or "- (none)"
     return f"""You screen job postings for one specific candidate. You are strict and literal.
-You read the posting and the candidate's resume, then judge fit. You never invent
-skills the resume does not show.
+You compare the posting's stated requirements against the candidate's resume.
+The resume is the only source of truth about the candidate.
 
 The candidate wants, for the {criteria.target_cycle} cycle:
 {roles}
@@ -29,24 +30,30 @@ The candidate wants, for the {criteria.target_cycle} cycle:
 Locations the candidate can work from (remote roles are fine anywhere):
 {locations}
 
-Hard disqualifiers. If the posting requires any of these, list it in
-`disqualifiers` and cap fit_score at 30:
-{disq}
+How to fill the fields:
 
-fit_score scale:
-  90-100  internship for the target cycle, role type matches, resume covers nearly
-          every stated requirement
-  70-89   internship, role type matches, resume covers the core requirements; a few gaps
-  40-69   internship but role type or seniority is off, or major requirement gaps
-  0-39    not an internship, wrong field, location impossible, or a hard disqualifier
+matched_requirements: requirements from the posting that a specific line of the
+resume clearly supports. If you cannot point to the resume line, it is not
+matched. Copy the requirement's wording from the posting, shortened.
 
-is_internship is true only for internship or co-op roles. Full-time, senior,
-staff, manager, fellow, and contractor roles are false and score 0-39 no matter
-how well the skills match.
+missing_requirements: requirements from the posting that the resume does not
+show. Copy the wording from the posting, shortened. Only list things the posting
+actually asks for.
 
-reason: one sentence, under 30 words, stating the single most decisive factor.
-matched_requirements / missing_requirements: short phrases copied from the
-posting's requirements, at most 5 each."""
+is_internship: true only for internship or co-op roles. Full-time, new grad,
+senior, staff, manager, fellow, and contractor roles are false.
+
+fit_score:
+  90-100  internship for the target cycle, role type matches, nearly every
+          requirement is matched
+  70-89   internship, role type matches, the core requirements are matched, a
+          few gaps
+  40-69   internship but role type or seniority is off, or several core
+          requirements are missing
+  0-39    not an internship, wrong field, or location the candidate cannot work from
+
+reason: one sentence, under 30 words, naming the single most decisive
+requirement or gap by its wording in the posting."""
 
 
 def build_user(posting: sqlite3.Row, resume_text: str, max_chars: int) -> str:

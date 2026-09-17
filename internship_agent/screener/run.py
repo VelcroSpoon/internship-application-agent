@@ -23,7 +23,7 @@ import sqlite3
 from dataclasses import dataclass, field
 
 from internship_agent.clock import now_iso
-from internship_agent.config import CriteriaFile
+from internship_agent.config import DISQUALIFIED_SCORE_CAP, CriteriaFile, Disqualifier
 from internship_agent.db.events import log_event
 from internship_agent.llm.base import LLMOutputError, LLMResponse, LLMTransportError, StructuredLLM
 from internship_agent.screener.models import Screening
@@ -41,9 +41,16 @@ class ScreenResult:
     title: str
     location: str | None
     model: str
-    fit_score: int
+    fit_score: int  # after any disqualifier cap
     reason: str
     is_internship: bool
+    disqualifiers: list[str] = field(default_factory=list)
+
+
+def find_disqualifiers(description: str | None, rules: list[Disqualifier]) -> list[str]:
+    """Labels of every hard-disqualifier regex that matches the posting text."""
+    text = description or ""
+    return [d.label for d in rules if d.compiled().search(text)]
 
 
 @dataclass
@@ -139,19 +146,24 @@ def run_screener(
 
         s = response.parsed
         summary.scored += 1
+        disqualifiers = find_disqualifiers(
+            posting["description"], settings.criteria.hard_disqualifiers
+        )
+        fit_score = min(s.fit_score, DISQUALIFIED_SCORE_CAP) if disqualifiers else s.fit_score
         result = ScreenResult(
             posting_id=posting["id"],
             company=posting["company"],
             title=posting["title"],
             location=posting["location"],
             model=response.model,
-            fit_score=s.fit_score,
+            fit_score=fit_score,
             reason=s.reason,
             is_internship=s.is_internship,
+            disqualifiers=disqualifiers,
         )
         summary.results.append(result)
         if not dry_run:
-            _persist_screening(conn, posting["id"], response, ts)
+            _persist_screening(conn, posting["id"], response, result, ts)
 
     if not dry_run:
         log_event(conn, "screener.run_finished", payload=summary.counts(), ts=ts)
@@ -183,14 +195,24 @@ def _persist_prefilter(conn: sqlite3.Connection, posting_id: int, reason: str, t
 
 
 def _persist_screening(
-    conn: sqlite3.Connection, posting_id: int, response: LLMResponse[Screening], ts: str
+    conn: sqlite3.Connection,
+    posting_id: int,
+    response: LLMResponse[Screening],
+    result: ScreenResult,
+    ts: str,
 ) -> None:
     s = response.parsed
-    raw = {"screening": s.model_dump(), "usage": response.usage, "raw_text": response.raw_text}
+    raw = {
+        "screening": s.model_dump(),
+        "model_fit_score": s.fit_score,  # pre-cap, so the cap's effect is visible
+        "disqualifiers": result.disqualifiers,
+        "usage": response.usage,
+        "raw_text": response.raw_text,
+    }
     cur = conn.execute(
         "INSERT INTO screenings (posting_id, model, fit_score, reason, raw_json, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        (posting_id, response.model, s.fit_score, s.reason, json.dumps(raw), ts),
+        (posting_id, response.model, result.fit_score, s.reason, json.dumps(raw), ts),
     )
     log_event(
         conn,
@@ -198,7 +220,9 @@ def _persist_screening(
         posting_id=posting_id,
         payload={
             "screening_id": cur.lastrowid,
-            "fit_score": s.fit_score,
+            "fit_score": result.fit_score,
+            "model_fit_score": s.fit_score,
+            "disqualifiers": result.disqualifiers,
             "model": response.model,
             "usage": response.usage,
         },

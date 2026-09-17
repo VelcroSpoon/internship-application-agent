@@ -10,6 +10,7 @@ from internship_agent.config import (
     CandidateConfig,
     CriteriaConfig,
     CriteriaFile,
+    Disqualifier,
     PrefilterConfig,
     ScreenerConfig,
 )
@@ -30,7 +31,10 @@ def settings(**overrides) -> CriteriaFile:
             target_cycle="Summer 2027",
             target_roles=["ML internship"],
             acceptable_locations=["Montreal, QC"],
-            hard_disqualifiers=["requires clearance"],
+            hard_disqualifiers=[
+                Disqualifier(label="security clearance", pattern=r"security clearance"),
+                Disqualifier(label="PhD required", pattern=r"\bPhD\b.{0,20}\brequired\b"),
+            ],
             queue_threshold=70,
         ),
         prefilter=PrefilterConfig(title_patterns=[r"\bintern(ship)?\b"]),
@@ -52,7 +56,6 @@ def screening(score: int, reason: str = "fine") -> Screening:
         is_internship=True,
         matched_requirements=["Python"],
         missing_requirements=[],
-        disqualifiers=[],
     )
 
 
@@ -214,8 +217,41 @@ def test_prompt_carries_resume_criteria_and_truncated_description(conn):
     (call,) = llm.calls
     assert call.schema is Screening
     assert "Summer 2027" in call.system and "ML internship" in call.system
-    assert "requires clearance" in call.system and "Montreal, QC" in call.system
+    assert "Montreal, QC" in call.system
+    # Small models anchor on checklists and echo them back as findings. The
+    # disqualifier list is applied in code and deliberately kept out of the prompt.
+    assert "security clearance" not in call.system and "PhD" not in call.system
     assert "MY RESUME TEXT" in call.user
     assert "Scale AI" in call.user and "ML Intern" in call.user
     assert "TAIL" not in call.user  # cut at description_max_chars=500
     assert "truncated" in call.user.lower()
+
+
+def test_disqualifier_pattern_caps_score_and_is_recorded(conn):
+    """Hard disqualifiers are regexes over the posting, applied in code. A hit caps
+    the stored score at 30 no matter what the model said, and the label is kept."""
+    a = add_posting(conn, "ML Intern", description="Must hold an active security clearance.")
+    b = add_posting(conn, "SWE Intern", description="Python, PyTorch, no clearance needed.")
+    llm = FakeLLM([screening(95, "great"), screening(88, "good")])
+
+    summary = run_screener(conn, llm, settings=settings(), resume_text="R", now=TS)
+
+    got = rows(conn)
+    assert [(r["posting_id"], r["fit_score"]) for r in got] == [(a, 30.0), (b, 88.0)]
+    raw_a = json.loads(got[0]["raw_json"])
+    assert raw_a["disqualifiers"] == ["security clearance"]
+    assert raw_a["model_fit_score"] == 95
+    assert json.loads(got[1]["raw_json"])["disqualifiers"] == []
+    assert summary.results[0].fit_score == 30
+    assert summary.results[0].disqualifiers == ["security clearance"]
+
+
+def test_disqualifier_matching_is_case_insensitive_and_only_reads_the_posting(conn):
+    add_posting(conn, "ML Intern", description="PHD REQUIRED for this role.")
+    llm = FakeLLM([screening(80)])
+
+    run_screener(conn, llm, settings=settings(), resume_text="I have a security clearance", now=TS)
+
+    (row,) = rows(conn)
+    assert json.loads(row["raw_json"])["disqualifiers"] == ["PhD required"]
+    assert row["fit_score"] == 30.0

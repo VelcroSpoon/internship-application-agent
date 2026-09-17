@@ -110,7 +110,6 @@ def test_screener_dry_run_prints_scores_and_writes_nothing(tmp_path: Path, capsy
                 is_internship=True,
                 matched_requirements=[],
                 missing_requirements=[],
-                disqualifiers=[],
             )
             for s in (81, 33, 90)
         ]
@@ -143,7 +142,6 @@ def test_screener_run_then_queue_list(tmp_path: Path, capsys):
                 is_internship=True,
                 matched_requirements=[],
                 missing_requirements=[],
-                disqualifiers=[],
             )
             for s in (81, 33, 90)
         ]

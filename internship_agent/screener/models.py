@@ -36,8 +36,5 @@ class Screening(BaseModel):
         max_length=5,
         description="Posting requirements the resume does not show. Short phrases.",
     )
-    disqualifiers: list[str] = Field(
-        max_length=5,
-        description="Hard blockers present in the posting (clearance, PhD, location). "
-        "Empty if none.",
-    )
+    # No 'disqualifiers' field on purpose: hard disqualifiers are regexes applied
+    # in code (see config.Disqualifier). The model only judges fit.

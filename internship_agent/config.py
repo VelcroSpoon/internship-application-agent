@@ -72,11 +72,41 @@ class CandidateConfig(_Strict):
     master_resume_path: Path
 
 
+def _compile_or_raise(pattern: str) -> re.Pattern[str]:
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"bad regex {pattern!r}: {exc}") from exc
+
+
+class Disqualifier(_Strict):
+    """A hard no, detected by regex over the posting text, in code.
+
+    Deliberately not given to the model: a 3B model handed a checklist
+    echoes it back as findings instead of reading the posting.
+    """
+
+    label: str = Field(min_length=1)
+    pattern: str = Field(min_length=1)
+
+    @field_validator("pattern")
+    @classmethod
+    def _must_compile(cls, pattern: str) -> str:
+        _compile_or_raise(pattern)
+        return pattern
+
+    def compiled(self) -> re.Pattern[str]:
+        return _compile_or_raise(self.pattern)
+
+
+DISQUALIFIED_SCORE_CAP = 30
+
+
 class CriteriaConfig(_Strict):
     target_cycle: str = Field(min_length=1)
     target_roles: list[str] = Field(default_factory=list)
     acceptable_locations: list[str] = Field(default_factory=list)
-    hard_disqualifiers: list[str] = Field(default_factory=list)
+    hard_disqualifiers: list[Disqualifier] = Field(default_factory=list)
     queue_threshold: int = Field(default=70, ge=0, le=100)
 
 
@@ -87,14 +117,11 @@ class PrefilterConfig(_Strict):
     @classmethod
     def _must_compile(cls, patterns: list[str]) -> list[str]:
         for p in patterns:
-            try:
-                re.compile(p, re.IGNORECASE)
-            except re.error as exc:
-                raise ValueError(f"bad regex {p!r}: {exc}") from exc
+            _compile_or_raise(p)
         return patterns
 
     def compiled(self) -> list[re.Pattern[str]]:
-        return [re.compile(p, re.IGNORECASE) for p in self.title_patterns]
+        return [_compile_or_raise(p) for p in self.title_patterns]
 
 
 class ScreenerConfig(_Strict):

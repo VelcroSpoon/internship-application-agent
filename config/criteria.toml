@@ -16,14 +16,25 @@ target_roles = [
 # Locations you can actually work from. The model treats anything else as a
 # disqualifier unless the posting says remote.
 acceptable_locations = ["Montreal, QC", "Toronto, ON", "Remote (Canada)", "Remote (US)"]
-# Things that should push a posting out of the queue regardless of fit.
-hard_disqualifiers = [
-    "requires an active security clearance",
-    "requires a PhD or PhD enrolment",
-    "requires 3+ years of full-time professional experience",
-]
 # Fit score at or above this lands in the drafting queue.
 queue_threshold = 70
+
+# Hard disqualifiers: case-insensitive regexes run against the posting text IN
+# CODE, never shown to the model. A hit caps the stored fit score at 30 and
+# records the label. Deliberate: a 3B model given this list as a checklist
+# copied it back verbatim as "missing requirements" instead of reading the
+# posting. Keep patterns specific; "3+ years" matches nice-to-have lines too.
+[[criteria.hard_disqualifiers]]
+label = "security clearance required"
+pattern = "(active|current|eligible for)?\\s*(security clearance|TS/SCI|top secret)"
+
+[[criteria.hard_disqualifiers]]
+label = "PhD required"
+pattern = "\\b(PhD|doctoral)\\b.{0,40}\\b(required|enrolled|candidate|student)\\b"
+
+[[criteria.hard_disqualifiers]]
+label = "US citizenship required"
+pattern = "\\bU\\.?S\\.? citizen(ship)?\\b.{0,20}\\brequired\\b"
 
 [prefilter]
 # Case-insensitive regexes. A posting whose title matches NONE of these gets a

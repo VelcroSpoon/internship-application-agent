@@ -15,7 +15,6 @@ def _ok(**overrides) -> dict:
         "is_internship": True,
         "matched_requirements": ["Python", "PyTorch"],
         "missing_requirements": ["Rust"],
-        "disqualifiers": [],
     }
     return {**base, **overrides}
 
