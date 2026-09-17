@@ -11,6 +11,7 @@ no email, no browser automation. That is the product, not a missing feature.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from internship_agent.clock import now_iso
@@ -98,3 +99,68 @@ ORDER BY a.updated_at DESC, a.id DESC
 
 def list_applications(conn: sqlite3.Connection, *, status: str | None = None) -> list[sqlite3.Row]:
     return conn.execute(LIST_SQL, {"status": status}).fetchall()
+
+
+# --- human edits ---------------------------------------------------------------
+
+# Editing is allowed while the application is still the agent's to change or is
+# sitting in review. Once decided, the record is closed.
+EDITABLE = {"drafting", "awaiting_review"}
+
+
+def save_human_draft(
+    conn: sqlite3.Connection,
+    application_id: int,
+    *,
+    bullets: list[dict],
+    cover_letter: str,
+    note: str = "",
+    now: str | None = None,
+) -> int:
+    """Persist a human edit as the next round, attributed to the human.
+
+    It is an ordinary draft row so the review UI and the eval read one table
+    and one ordering, but `authored_by = 'human'` keeps it out of the
+    model-vs-model numbers. Nothing critiques it: the rubric scores what the
+    Writer produced, and scoring the candidate's own words would be noise.
+    """
+    ts = now or now_iso()
+    row = conn.execute("SELECT status FROM applications WHERE id = ?", (application_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"no application with id {application_id}")
+    if row["status"] not in EDITABLE:
+        allowed = " or ".join(sorted(EDITABLE))
+        raise InvalidTransition(
+            f"application {application_id} is '{row['status']}'; only {allowed} can be edited"
+        )
+
+    next_round = conn.execute(
+        "SELECT COALESCE(MAX(round_index), -1) + 1 FROM drafts WHERE application_id = ?",
+        (application_id,),
+    ).fetchone()[0]
+    cur = conn.execute(
+        "INSERT INTO drafts (application_id, round_index, bullets_json, cover_letter, "
+        "writer_model, usage_json, authored_by, created_at) "
+        "VALUES (?, ?, ?, ?, NULL, ?, 'human', ?)",
+        (
+            application_id,
+            next_round,
+            json.dumps(bullets),
+            cover_letter,
+            json.dumps({"note": note}),
+            ts,
+        ),
+    )
+    conn.execute(
+        "UPDATE applications SET status = 'awaiting_review', updated_at = ? WHERE id = ?",
+        (ts, application_id),
+    )
+    log_event(
+        conn,
+        "draft.edited_by_human",
+        application_id=application_id,
+        draft_id=cur.lastrowid,
+        payload={"round_index": next_round, "note": note},
+        ts=ts,
+    )
+    return cur.lastrowid

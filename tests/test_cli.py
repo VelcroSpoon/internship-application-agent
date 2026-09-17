@@ -40,7 +40,7 @@ def test_db_migrate_creates_database_file(tmp_path: Path, capsys):
 
     assert code == 0
     assert db.exists()
-    assert "applied [1]" in capsys.readouterr().out
+    assert "applied [1, 2]" in capsys.readouterr().out
 
 
 def test_scout_run_twice_populates_once(tmp_path: Path, capsys):

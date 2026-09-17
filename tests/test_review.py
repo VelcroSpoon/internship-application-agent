@@ -178,3 +178,70 @@ def test_list_can_filter_by_status(conn):
     rows = list_applications(conn, status="approved")
 
     assert [r["application_id"] for r in rows] == [approved]
+
+
+# --- human edits ------------------------------------------------------------
+
+
+def test_a_human_edit_becomes_the_next_round_attributed_to_the_human(conn):
+    from internship_agent.review import save_human_draft
+
+    app_id = seed(conn, rounds=2)
+
+    draft_id = save_human_draft(
+        conn,
+        app_id,
+        bullets=[{"text": "mine", "resume_anchor": "line 0"}],
+        cover_letter="my letter",
+        note="tightened it",
+        now=LATER,
+    )
+
+    row = conn.execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()
+    assert row["round_index"] == 2  # follows the model's 0 and 1
+    assert row["authored_by"] == "human"
+    assert row["writer_model"] is None
+    assert json.loads(row["usage_json"])["note"] == "tightened it"
+    payload = conn.execute(
+        "SELECT payload_json FROM events WHERE kind = 'draft.edited_by_human'"
+    ).fetchone()
+    assert json.loads(payload[0]) == {"round_index": 2, "note": "tightened it"}
+
+
+def test_editing_returns_the_application_to_review(conn):
+    from internship_agent.review import save_human_draft
+
+    app_id = seed(conn, "drafting", rounds=1)
+
+    save_human_draft(conn, app_id, bullets=[{"text": "x"}], cover_letter="y", now=LATER)
+
+    assert status_of(conn, app_id) == "awaiting_review"
+
+
+def test_a_decided_application_cannot_be_edited(conn):
+    from internship_agent.review import save_human_draft
+
+    app_id = seed(conn)
+    approve(conn, app_id)
+
+    with pytest.raises(InvalidTransition):
+        save_human_draft(conn, app_id, bullets=[{"text": "x"}], cover_letter="y")
+
+
+def test_editing_an_unknown_application_raises(conn):
+    from internship_agent.review import save_human_draft
+
+    with pytest.raises(LookupError):
+        save_human_draft(conn, 999, bullets=[{"text": "x"}], cover_letter="y")
+
+
+def test_the_first_edit_on_an_application_with_no_drafts_is_round_zero(conn):
+    from internship_agent.review import save_human_draft
+
+    app_id = seed(conn, "drafting", rounds=0)
+
+    draft_id = save_human_draft(conn, app_id, bullets=[{"text": "x"}], cover_letter="y")
+
+    assert (
+        conn.execute("SELECT round_index FROM drafts WHERE id = ?", (draft_id,)).fetchone()[0] == 0
+    )

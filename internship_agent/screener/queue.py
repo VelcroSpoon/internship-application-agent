@@ -10,7 +10,8 @@ from __future__ import annotations
 import sqlite3
 
 QUEUE_SQL = """
-SELECT p.id AS posting_id, p.company, p.title, p.location, p.url, p.first_seen_at,
+SELECT p.id AS posting_id, p.company, p.title, p.location, p.url, p.source,
+       p.posted_at, p.first_seen_at,
        s.fit_score, s.reason, s.model, s.created_at AS screened_at
 FROM postings p
 JOIN screenings s ON s.posting_id = p.id

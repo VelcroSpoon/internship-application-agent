@@ -38,10 +38,48 @@ class QueueItem(BaseModel):
     title: str
     location: str | None
     url: str
+    source: str
+    # Age comes from posted_at (the board's own publish date) and falls back to
+    # first_seen_at (when the scout found it) for boards that report nothing.
+    posted_at: str | None
+    first_seen_at: str
     fit_score: float
     reason: str
     model: str
     screened_at: str
+
+
+class ScreeningOut(BaseModel):
+    model: str
+    fit_score: float
+    reason: str
+    is_internship: bool | None = None
+    matched_requirements: list[str] = Field(default_factory=list)
+    missing_requirements: list[str] = Field(default_factory=list)
+    disqualifiers: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class ApplicationRef(BaseModel):
+    application_id: int
+    status: str
+
+
+class PostingDetail(BaseModel):
+    posting_id: int
+    company: str
+    title: str
+    location: str | None
+    url: str
+    source: str
+    external_id: str | None
+    description: str | None
+    posted_at: str | None
+    first_seen_at: str
+    last_seen_at: str
+    status: str
+    screening: ScreeningOut | None = None
+    application: ApplicationRef | None = None
 
 
 class ApplicationSummary(BaseModel):
@@ -63,6 +101,7 @@ class ApplicationSummary(BaseModel):
 class RoundDetail(BaseModel):
     round_index: int
     draft_id: int
+    authored_by: str = "writer"
     bullets: list[Bullet]
     cover_letter: str
     writer_model: str | None
@@ -99,6 +138,20 @@ class LoopRunResponse(BaseModel):
 
 
 class DecisionRequest(BaseModel):
+    note: str = ""
+
+
+class EditedBullet(BaseModel):
+    """Looser than the Writer's Bullet on purpose: that schema is a prompt
+    contract for the model, not a rule for the person whose application it is."""
+
+    text: str = Field(min_length=1, max_length=1000)
+    resume_anchor: str = Field(default="", max_length=500)
+
+
+class EditRequest(BaseModel):
+    bullets: list[EditedBullet] = Field(min_length=1, max_length=12)
+    cover_letter: str = Field(min_length=1, max_length=20000)
     note: str = ""
 
 

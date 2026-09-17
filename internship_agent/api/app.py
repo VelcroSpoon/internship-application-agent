@@ -29,12 +29,15 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from internship_agent.agents.critic import Critique
 from internship_agent.api.schemas import (
     ApplicationDetail,
+    ApplicationRef,
     ApplicationSummary,
     DecisionRequest,
     DecisionResponse,
+    EditRequest,
     Health,
     LoopRunRequest,
     LoopRunResponse,
+    PostingDetail,
     PostingOut,
     QueueItem,
     RoundDetail,
@@ -42,6 +45,7 @@ from internship_agent.api.schemas import (
     SchedulerStatus,
     ScoreByDimension,
     ScoreByRound,
+    ScreeningOut,
 )
 from internship_agent.config import (
     DEFAULT_CONFIG_PATH,
@@ -62,6 +66,7 @@ from internship_agent.review import (
     list_applications,
     mark_submitted,
     reject,
+    save_human_draft,
 )
 from internship_agent.screener.queue import queue_postings
 from internship_agent.writer.models import Bullet
@@ -139,6 +144,28 @@ def create_app(
         ).fetchall()
         return [PostingOut(**dict(r)) for r in rows]
 
+    @app.get("/postings/{posting_id}", response_model=PostingDetail)
+    def posting_detail(posting_id: int, conn: sqlite3.Connection = Db) -> PostingDetail:
+        row = conn.execute("SELECT * FROM postings WHERE id = ?", (posting_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, f"no posting with id {posting_id}")
+        return PostingDetail(
+            posting_id=row["id"],
+            company=row["company"],
+            title=row["title"],
+            location=row["location"],
+            url=row["url"],
+            source=row["source"],
+            external_id=row["external_id"],
+            description=row["description"],
+            posted_at=row["posted_at"],
+            first_seen_at=row["first_seen_at"],
+            last_seen_at=row["last_seen_at"],
+            status=row["status"],
+            screening=_latest_screening(conn, posting_id),
+            application=_application_ref(conn, posting_id),
+        )
+
     @app.get("/queue", response_model=list[QueueItem])
     def queue(conn: sqlite3.Connection = Db) -> list[QueueItem]:
         settings = load_criteria(criteria_path)
@@ -150,6 +177,9 @@ def create_app(
                 title=r["title"],
                 location=r["location"],
                 url=r["url"],
+                source=r["source"],
+                posted_at=r["posted_at"],
+                first_seen_at=r["first_seen_at"],
                 fit_score=r["fit_score"],
                 reason=r["reason"],
                 model=r["model"],
@@ -257,13 +287,35 @@ def create_app(
             mark_submitted, application_id, body, conn, "Recorded that you submitted it."
         )
 
+    @app.post("/applications/{application_id}/drafts", response_model=ApplicationDetail)
+    def edit_application(
+        application_id: int, body: EditRequest, conn: sqlite3.Connection = Db
+    ) -> ApplicationDetail:
+        try:
+            save_human_draft(
+                conn,
+                application_id,
+                bullets=[b.model_dump() for b in body.bullets],
+                cover_letter=body.cover_letter,
+                note=body.note,
+            )
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except InvalidTransition as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return application_detail(application_id, conn)
+
     # --- stats ----------------------------------------------------------------
 
     @app.get("/stats/scores-by-round", response_model=list[ScoreByRound])
     def scores_by_round(conn: sqlite3.Connection = Db) -> list[ScoreByRound]:
         rows = conn.execute(
-            "SELECT round_index, ROUND(AVG(overall), 3) AS mean_overall, COUNT(*) AS applications "
-            "FROM critiques GROUP BY round_index ORDER BY round_index"
+            # Only the Writer's rounds. A human edit has no critique, so it could
+            # not appear anyway, but the join says so rather than relying on that.
+            "SELECT c.round_index, ROUND(AVG(c.overall), 3) AS mean_overall, "
+            "COUNT(*) AS applications FROM critiques c "
+            "JOIN drafts d ON d.id = c.draft_id AND d.authored_by = 'writer' "
+            "GROUP BY c.round_index ORDER BY c.round_index"
         ).fetchall()
         return [ScoreByRound(**dict(r)) for r in rows]
 
@@ -273,6 +325,7 @@ def create_app(
             "SELECT c.round_index, s.dimension, ROUND(AVG(s.score), 3) AS mean_score, "
             "COUNT(*) AS applications FROM critique_scores s "
             "JOIN critiques c ON c.id = s.critique_id "
+            "JOIN drafts d ON d.id = c.draft_id AND d.authored_by = 'writer' "
             "GROUP BY c.round_index, s.dimension ORDER BY c.round_index, s.dimension"
         ).fetchall()
         return [ScoreByDimension(**dict(r)) for r in rows]
@@ -306,6 +359,35 @@ def _resume_text(settings) -> str:
     return resolve_resume_path(settings).read_text(encoding="utf-8")
 
 
+def _latest_screening(conn: sqlite3.Connection, posting_id: int) -> ScreeningOut | None:
+    row = conn.execute(
+        "SELECT * FROM screenings WHERE posting_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (posting_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    raw = json.loads(row["raw_json"]) if row["raw_json"] else {}
+    screening = raw.get("screening", {})
+    return ScreeningOut(
+        model=row["model"],
+        fit_score=row["fit_score"],
+        reason=row["reason"],
+        is_internship=screening.get("is_internship"),
+        matched_requirements=screening.get("matched_requirements", []),
+        missing_requirements=screening.get("missing_requirements", []),
+        disqualifiers=raw.get("disqualifiers", []),
+        created_at=row["created_at"],
+    )
+
+
+def _application_ref(conn: sqlite3.Connection, posting_id: int) -> ApplicationRef | None:
+    row = conn.execute(
+        "SELECT id, status FROM applications WHERE posting_id = ? ORDER BY id LIMIT 1",
+        (posting_id,),
+    ).fetchone()
+    return None if row is None else ApplicationRef(application_id=row["id"], status=row["status"])
+
+
 def _drafts_for(conn: sqlite3.Connection, application_id: int) -> list[RoundDetail]:
     rows = conn.execute(
         "SELECT d.*, c.critique_json FROM drafts d "
@@ -320,6 +402,7 @@ def _drafts_for(conn: sqlite3.Connection, application_id: int) -> list[RoundDeta
             RoundDetail(
                 round_index=r["round_index"],
                 draft_id=r["id"],
+                authored_by=r["authored_by"],
                 bullets=[Bullet.model_validate(b) for b in json.loads(r["bullets_json"])],
                 cover_letter=r["cover_letter"],
                 writer_model=r["writer_model"],

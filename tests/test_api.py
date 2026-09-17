@@ -94,7 +94,7 @@ def test_health_reports_the_database_it_is_using(paths):
 
     assert body["status"] == "ok"
     assert body["postings"] == 4
-    assert body["schema_version"] == 1
+    assert body["schema_version"] == 2  # latest applied migration
 
 
 def test_postings_are_listable(paths):
@@ -303,3 +303,142 @@ def test_stats_are_empty_before_any_loop_runs(paths):
     client = make_client(paths)
 
     assert client.get("/stats/scores-by-round").json() == []
+
+
+# --- stage 6: what the dashboard needs --------------------------------------
+
+
+def test_queue_carries_source_and_both_dates_so_age_can_be_shown(paths):
+    pid = posting_id_for(paths, INTERN_EXTERNAL_ID)
+    screen(paths, pid, 88)
+    client = make_client(paths)
+
+    (item,) = client.get("/queue").json()
+
+    assert item["source"] == "greenhouse:scaleai"
+    # posted_at is the board's own publish date: the honest basis for age.
+    # first_seen_at is when we found it, the fallback when a board reports nothing.
+    assert item["posted_at"] is not None and item["posted_at"].startswith("20")
+    assert item["first_seen_at"].startswith("20")
+
+
+def test_posting_detail_carries_the_full_text_and_the_screening(paths):
+    pid = posting_id_for(paths, INTERN_EXTERNAL_ID)
+    screen(paths, pid, 88)
+    client = make_client(paths)
+
+    body = client.get(f"/postings/{pid}").json()
+
+    assert body["posting_id"] == pid
+    assert body["source"] == "greenhouse:scaleai"
+    assert "Available for a Summer 2027 internship" in body["description"]
+    assert "<p>" not in body["description"]
+    assert body["screening"]["fit_score"] == 88
+    assert body["screening"]["reason"] == "a reason"
+    assert body["application"] is None
+
+
+def test_posting_detail_reports_an_existing_application(paths):
+    pid = posting_id_for(paths, INTERN_EXTERNAL_ID)
+    client = _run_one(paths)
+
+    body = client.get(f"/postings/{pid}").json()
+
+    assert body["application"] == {"application_id": 1, "status": "awaiting_review"}
+
+
+def test_posting_detail_without_a_screening_is_still_served(paths):
+    pid = posting_id_for(paths, INTERN_EXTERNAL_ID)
+
+    body = make_client(paths).get(f"/postings/{pid}").json()
+
+    assert body["screening"] is None and body["application"] is None
+
+
+def test_unknown_posting_detail_is_a_404(paths):
+    assert make_client(paths).get("/postings/9999").status_code == 404
+
+
+# --- human edits ------------------------------------------------------------
+
+
+def _edit_body(letter="My own letter, written by me, kept short."):
+    return {
+        "bullets": [{"text": "I wrote this myself.", "resume_anchor": "resume line 0"}],
+        "cover_letter": letter,
+        "note": "tightened the opening",
+    }
+
+
+def test_an_edit_is_persisted_as_a_new_human_authored_round(paths):
+    client = _run_one(paths)
+
+    resp = client.post("/applications/1/drafts", json=_edit_body())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["drafts"]) == 3
+    latest = body["drafts"][-1]
+    assert latest["round_index"] == 2
+    assert latest["authored_by"] == "human"
+    assert latest["writer_model"] is None
+    assert latest["cover_letter"].startswith("My own letter")
+    assert latest["critique"] is None  # nothing critiques a human edit
+    assert body["status"] == "awaiting_review"
+
+
+def test_the_model_rounds_are_still_attributed_to_the_writer(paths):
+    client = _run_one(paths)
+    client.post("/applications/1/drafts", json=_edit_body())
+
+    body = client.get("/applications/1").json()
+
+    assert [d["authored_by"] for d in body["drafts"]] == ["writer", "writer", "human"]
+
+
+def test_a_human_round_never_enters_the_eval_numbers(paths):
+    """The point of the attribution column: my own editing must not show up as
+    the model improving."""
+    client = _run_one(paths)
+    client.post("/applications/1/drafts", json=_edit_body())
+
+    by_round = client.get("/stats/scores-by-round").json()
+
+    assert [r["round_index"] for r in by_round] == [0, 1]
+    by_dim = client.get("/stats/scores-by-dimension").json()
+    assert {r["round_index"] for r in by_dim} == {0, 1}
+
+
+def test_an_edit_is_not_held_to_the_writer_prompt_contract(paths):
+    """The Draft schema is what the model is asked for, not a rule for the
+    human. A 40-character letter would fail the model's 300-char minimum."""
+    client = _run_one(paths)
+
+    resp = client.post("/applications/1/drafts", json=_edit_body(letter="Short. Deliberately."))
+
+    assert resp.status_code == 200
+    assert resp.json()["drafts"][-1]["cover_letter"] == "Short. Deliberately."
+
+
+def test_an_empty_edit_is_rejected(paths):
+    client = _run_one(paths)
+
+    resp = client.post(
+        "/applications/1/drafts", json={"bullets": [], "cover_letter": "", "note": ""}
+    )
+
+    assert resp.status_code == 422
+
+
+def test_editing_a_decided_application_is_a_conflict(paths):
+    client = _run_one(paths)
+    client.post("/applications/1/approve", json={})
+
+    resp = client.post("/applications/1/drafts", json=_edit_body())
+
+    assert resp.status_code == 409
+    assert "approved" in resp.json()["detail"]
+
+
+def test_editing_an_unknown_application_is_a_404(paths):
+    assert make_client(paths).post("/applications/1/drafts", json=_edit_body()).status_code == 404

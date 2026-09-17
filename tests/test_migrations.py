@@ -35,7 +35,7 @@ def table_names(conn: sqlite3.Connection) -> set[str]:
 def test_migrate_fresh_db_creates_all_tables(conn):
     applied = migrate(conn)
 
-    assert applied == [1]
+    assert applied == [1, 2]
     assert EXPECTED_TABLES <= table_names(conn)
 
 
@@ -44,7 +44,7 @@ def test_migrate_is_idempotent(conn):
     second_run = migrate(conn)
 
     assert second_run == []
-    assert applied_versions(conn) == [1]
+    assert applied_versions(conn) == [1, 2]
 
 
 def test_connection_enforces_foreign_keys(conn):
@@ -147,3 +147,64 @@ def _insert_critique(conn, draft_id: int, round_index: int, overall: float) -> i
         (draft_id, round_index, overall, _TS),
     )
     return cur.lastrowid
+
+
+# --- 0002: human-authored revisions -----------------------------------------
+
+
+def test_drafts_are_attributed_to_the_writer_by_default(conn):
+    migrate(conn)
+    app_id = _seed_application(conn)
+
+    draft_id = _insert_draft(conn, app_id, round_index=0)
+
+    assert (
+        conn.execute("SELECT authored_by FROM drafts WHERE id = ?", (draft_id,)).fetchone()[0]
+        == "writer"
+    )
+
+
+def test_a_draft_can_be_attributed_to_the_human(conn):
+    migrate(conn)
+    app_id = _seed_application(conn)
+
+    conn.execute(
+        "INSERT INTO drafts (application_id, round_index, bullets_json, cover_letter, "
+        "authored_by, created_at) VALUES (?, 0, '[]', 'mine', 'human', ?)",
+        (app_id, _TS),
+    )
+
+    assert conn.execute("SELECT authored_by FROM drafts").fetchone()[0] == "human"
+
+
+def test_no_other_author_is_allowed(conn):
+    migrate(conn)
+    app_id = _seed_application(conn)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO drafts (application_id, round_index, bullets_json, cover_letter, "
+            "authored_by, created_at) VALUES (?, 0, '[]', 'x', 'chatgpt', ?)",
+            (app_id, _TS),
+        )
+
+
+def test_migrating_an_existing_v1_database_applies_only_the_new_migration(conn):
+    from internship_agent.db.migrate import MIGRATIONS_DIR, _execute_statements, discover
+
+    applied_versions(conn)  # creates the bookkeeping table
+    (v1,) = [p for v, p in discover(MIGRATIONS_DIR) if v == 1]
+    conn.execute("BEGIN")
+    _execute_statements(conn, v1.read_text(encoding="utf-8"))
+    conn.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (1, 'x', ?)", (_TS,)
+    )
+    conn.execute("COMMIT")
+    assert "authored_by" not in {r[1] for r in conn.execute("PRAGMA table_info(drafts)")}, (
+        "v1 alone must not have the column"
+    )
+
+    applied = migrate(conn)
+
+    assert applied == [2]
+    assert applied_versions(conn) == [1, 2]
