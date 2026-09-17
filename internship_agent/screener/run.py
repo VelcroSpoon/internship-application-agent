@@ -26,8 +26,9 @@ from internship_agent.clock import now_iso
 from internship_agent.config import DISQUALIFIED_SCORE_CAP, CriteriaFile, Disqualifier
 from internship_agent.db.events import log_event
 from internship_agent.llm.base import LLMOutputError, LLMResponse, LLMTransportError, StructuredLLM
+from internship_agent.llm.retry import complete_with_retry
 from internship_agent.screener.models import Screening
-from internship_agent.screener.prompt import build_system, build_user, repair_suffix
+from internship_agent.screener.prompt import build_system, build_user
 
 log = logging.getLogger(__name__)
 
@@ -123,7 +124,13 @@ def run_screener(
 
         user = build_user(posting, resume_text, settings.screener.description_max_chars)
         try:
-            response = _complete_with_retry(backend, system, user, settings.screener.max_attempts)
+            response = complete_with_retry(
+                backend,
+                system=system,
+                user=user,
+                schema=Screening,
+                max_attempts=settings.screener.max_attempts,
+            )
         except LLMOutputError as exc:
             summary.failed += 1
             log.warning("screener: posting %s failed validation: %s", posting["id"], exc)
@@ -168,21 +175,6 @@ def run_screener(
     if not dry_run:
         log_event(conn, "screener.run_finished", payload=summary.counts(), ts=ts)
     return summary
-
-
-def _complete_with_retry(
-    backend: StructuredLLM, system: str, user: str, max_attempts: int
-) -> LLMResponse[Screening]:
-    prompt = user
-    last: LLMOutputError | None = None
-    for _ in range(max_attempts):
-        try:
-            return backend.complete(system=system, user=prompt, schema=Screening)
-        except LLMOutputError as exc:
-            last = exc
-            prompt = user + repair_suffix(str(exc), exc.raw_text)
-    assert last is not None
-    raise last
 
 
 def _persist_prefilter(conn: sqlite3.Connection, posting_id: int, reason: str, ts: str) -> None:

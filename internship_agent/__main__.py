@@ -18,7 +18,7 @@ from internship_agent.config import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_CRITERIA_PATH,
     DEFAULT_DB_PATH,
-    build_screener_backend,
+    build_backend,
     build_sources,
     load_config,
     load_criteria,
@@ -99,7 +99,7 @@ def cmd_screener_run(
 ) -> int:
     settings = load_criteria(args.criteria)
     resume_text = resolve_resume_path(settings).read_text(encoding="utf-8")
-    backend = backend or build_screener_backend(settings.screener)
+    backend = backend or build_backend(settings.screener)
     conn = _open(args.db)
     try:
         summary = run_screener(

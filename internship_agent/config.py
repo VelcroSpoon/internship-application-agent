@@ -17,6 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from internship_agent.llm.anthropic_backend import AnthropicBackend
 from internship_agent.llm.base import StructuredLLM
 from internship_agent.llm.ollama import OllamaBackend
 from internship_agent.scout.base import Source
@@ -124,12 +125,28 @@ class PrefilterConfig(_Strict):
         return [_compile_or_raise(p) for p in self.title_patterns]
 
 
-class ScreenerConfig(_Strict):
-    backend: Literal["ollama"] = "ollama"
+Backend = Literal["ollama", "anthropic"]
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+
+
+class BackendConfig(_Strict):
+    """Which model answers, and how. Shared by every agent so any of them can be
+    pointed at the local or the hosted backend with a one-line config edit."""
+
+    backend: Backend = "ollama"
     model: str = Field(min_length=1)
     ollama_host: str = "http://localhost:11434"
-    description_max_chars: int = Field(default=6000, ge=500)
+    effort: Effort = "medium"  # Anthropic only; Ollama ignores it
     max_attempts: int = Field(default=2, ge=1, le=5)
+
+
+class ScreenerConfig(BackendConfig):
+    description_max_chars: int = Field(default=6000, ge=500)
+
+
+class WriterConfig(BackendConfig):
+    backend: Backend = "anthropic"
+    model: str = Field(default="claude-opus-5", min_length=1)
 
 
 class CriteriaFile(_Strict):
@@ -137,6 +154,7 @@ class CriteriaFile(_Strict):
     criteria: CriteriaConfig
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
     screener: ScreenerConfig
+    writer: WriterConfig = Field(default_factory=WriterConfig)
 
 
 def load_criteria(path: Path = DEFAULT_CRITERIA_PATH) -> CriteriaFile:
@@ -149,7 +167,42 @@ def resolve_resume_path(cf: CriteriaFile) -> Path:
     return p if p.is_absolute() else REPO_ROOT / p
 
 
-def build_screener_backend(cfg: ScreenerConfig) -> StructuredLLM:
+def build_backend(cfg: BackendConfig) -> StructuredLLM:
     if cfg.backend == "ollama":
         return OllamaBackend(model=cfg.model, host=cfg.ollama_host)
-    raise ValueError(f"unknown screener backend {cfg.backend!r}")  # unreachable via Literal
+    if cfg.backend == "anthropic":
+        return AnthropicBackend(model=cfg.model, effort=cfg.effort)
+    raise ValueError(f"unknown backend {cfg.backend!r}")  # unreachable via Literal
+
+
+# --- voice.toml: the VOICE anti-pattern list ---------------------------------------
+
+DEFAULT_VOICE_PATH = Path(
+    os.environ.get("INTERNSHIP_AGENT_VOICE", REPO_ROOT / "config" / "voice.toml")
+)
+
+
+class VoiceConfig(_Strict):
+    banned_phrases: list[str] = Field(default_factory=list)
+    banned_patterns: list[str] = Field(default_factory=list)
+    style_notes: list[str] = Field(default_factory=list)
+
+    @field_validator("banned_patterns")
+    @classmethod
+    def _must_compile(cls, patterns: list[str]) -> list[str]:
+        for p in patterns:
+            _compile_or_raise(p)
+        return patterns
+
+    def compiled_patterns(self) -> list[re.Pattern[str]]:
+        # MULTILINE so ^/$ anchor per line: salutation rules target the first line.
+        return [re.compile(p, re.IGNORECASE | re.MULTILINE) for p in self.banned_patterns]
+
+
+class _VoiceFile(_Strict):
+    voice: VoiceConfig
+
+
+def load_voice(path: Path = DEFAULT_VOICE_PATH) -> VoiceConfig:
+    with open(path, "rb") as f:
+        return _VoiceFile.model_validate(tomllib.load(f)).voice

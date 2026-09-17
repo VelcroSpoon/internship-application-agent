@@ -127,3 +127,29 @@ def test_hard_disqualifier_patterns_must_compile(tmp_path: Path):
 
     with pytest.raises(ValidationError):
         load_criteria(p)
+
+
+def test_criteria_writer_section_and_anthropic_backend_load(tmp_path: Path):
+    from internship_agent.config import load_criteria
+
+    p = tmp_path / "criteria.toml"
+    p.write_text(
+        '[candidate]\nmaster_resume_path = "r.md"\n'
+        '[criteria]\ntarget_cycle = "S"\n'
+        '[screener]\nmodel = "claude-haiku-4-5"\nbackend = "anthropic"\n'
+        '[writer]\nmodel = "claude-opus-5"\neffort = "medium"\n',
+        encoding="utf-8",
+    )
+
+    cf = load_criteria(p)
+
+    assert cf.screener.backend == "anthropic"
+    assert cf.writer.backend == "anthropic" and cf.writer.model == "claude-opus-5"
+    assert cf.writer.effort == "medium"
+
+
+def test_shipped_criteria_has_a_writer_section():
+    from internship_agent.config import DEFAULT_CRITERIA_PATH, load_criteria
+
+    cf = load_criteria(DEFAULT_CRITERIA_PATH)
+    assert cf.writer.model

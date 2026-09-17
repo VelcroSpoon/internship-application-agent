@@ -43,7 +43,10 @@ pattern = "\\bU\\.?S\\.? citizen(ship)?\\b.{0,20}\\brequired\\b"
 title_patterns = ["\\bintern(ship)?\\b", "\\bco-?op\\b", "summer 20\\d\\d", "\\bnew grad\\b"]
 
 [screener]
-backend = "ollama"            # 'ollama' now; 'anthropic' once the Writer lands
+# 'ollama' runs locally for free but a 3B model is a coarse filter (it echoes
+# lists from the prompt). 'anthropic' with model = "claude-haiku-4-5" is the
+# quality option at about a tenth of a cent per posting.
+backend = "ollama"
 model = "qwen2.5:3b"
 ollama_host = "http://localhost:11434"
 # Postings are truncated to this many characters before prompting. Greenhouse
@@ -51,4 +54,13 @@ ollama_host = "http://localhost:11434"
 # the first half.
 description_max_chars = 6000
 # One retry on schema failure, then skip the posting until the next run.
+max_attempts = 2
+
+[writer]
+# The Writer drafts bullets and a cover letter. Hosted model by default: this
+# runs maybe ten times a week and quality matters more than cost here.
+# A draft is roughly 3k tokens in, 1.5k out: about five cents on Opus.
+backend = "anthropic"
+model = "claude-opus-5"
+effort = "medium"
 max_attempts = 2

@@ -71,13 +71,3 @@ Location: {posting["location"] or "(not stated)"}
 {resume_text.strip()}
 
 Screen this posting for this candidate."""
-
-
-def repair_suffix(error: str, raw_text: str) -> str:
-    """Appended to the user prompt on retry after a schema failure."""
-    return (
-        "\n\n# Your previous answer was rejected\n"
-        f"Validation error: {error}\n"
-        f"Previous output: {raw_text[:500]}\n"
-        "Answer again. Respect every field constraint."
-    )

@@ -1,0 +1,49 @@
+# VOICE rules for the Writer. Edit this file, not the prompt.
+#
+# The Writer is shown these lists and told to avoid them. Then, because
+# models do not reliably obey lists, code scans every draft for hits and
+# records them on the draft. Nothing is rewritten automatically; the Critic
+# scores VOICE and the human decides.
+
+[voice]
+# Exact phrases, matched case-insensitively.
+banned_phrases = [
+    "I am writing to express my interest",
+    "I am excited to apply",
+    "excited by the opportunity",
+    "passionate about",
+    "I am confident that",
+    "leverage",
+    "synergy",
+    "fast-paced environment",
+    "hit the ground running",
+    "a perfect fit",
+    "align with my",
+    "not just",
+    "delve",
+    "tapestry",
+    "testament to",
+    "thrilled",
+    "dynamic team",
+    "cutting-edge",
+    "spearheaded",
+    "I would be honored",
+]
+
+# Regexes, matched case-insensitively. Catch cadence, not just words.
+banned_patterns = [
+    "\\bnot (just|only|merely) \\w+,? but( also)?\\b",   # "not just X but Y"
+    " — ",                                                # em-dash asides
+    "\\b(\\w+), (\\w+), and (\\w+)\\b.*\\b(\\w+), (\\w+), and (\\w+)\\b",  # stacked triads
+    "^(Dear (Sir|Madam|Hiring Manager|Recruiter)),?$",    # anonymous salutations
+]
+
+# Positive guidance, rendered verbatim into the prompt.
+style_notes = [
+    "Plain declarative sentences. One idea per sentence.",
+    "Say why this role, with a reason that would not survive a company swap.",
+    "Never restate the company's mission back to them.",
+    "Numbers only when the resume has them and only with the mechanism behind them.",
+    "No opening or closing ceremony. Start with the substance.",
+    "Contractions are fine. Adjectives mostly are not.",
+]
