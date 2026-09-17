@@ -70,3 +70,91 @@ def test_postings_list_prints_rows(tmp_path: Path, capsys):
     assert code == 0
     assert "Software Engineering Intern (Summer 2027)" in out
     assert out.count("Scale AI") == 4
+
+
+# --- screener + queue -------------------------------------------------------
+
+
+def _write_criteria(tmp_path: Path) -> Path:
+    resume = tmp_path / "resume.md"
+    resume.write_text("# Jane\n- Python, PyTorch\n", encoding="utf-8")
+    p = tmp_path / "criteria.toml"
+    p.write_text(
+        f'[candidate]\nmaster_resume_path = "{resume.as_posix()}"\n'
+        '[criteria]\ntarget_cycle = "Summer 2027"\nqueue_threshold = 70\n'
+        '[prefilter]\ntitle_patterns = ["intern"]\n'
+        '[screener]\nmodel = "fake"\n',
+        encoding="utf-8",
+    )
+    return p
+
+
+def _seeded(tmp_path: Path) -> tuple[Path, Path]:
+    db = tmp_path / "agent.db"
+    cfg = _write_config(tmp_path)
+    main(["scout", "run", "--db", str(db), "--config", str(cfg)], client=_fixture_client())
+    return db, _write_criteria(tmp_path)
+
+
+def test_screener_dry_run_prints_scores_and_writes_nothing(tmp_path: Path, capsys):
+    from internship_agent.screener.models import Screening
+    from tests.fakes import FakeLLM
+
+    db, criteria = _seeded(tmp_path)
+    capsys.readouterr()
+    llm = FakeLLM(
+        [
+            Screening(
+                fit_score=s,
+                reason="r",
+                is_internship=True,
+                matched_requirements=[],
+                missing_requirements=[],
+                disqualifiers=[],
+            )
+            for s in (81, 33, 90)
+        ]
+    )
+
+    code = main(
+        ["screener", "run", "--db", str(db), "--criteria", str(criteria), "--dry-run"],
+        backend=llm,
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "81" in out and "prefilter" in out
+    assert "scored=3" in out and "prefiltered=1" in out
+    conn = connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM screenings").fetchone()[0] == 0
+    conn.close()
+
+
+def test_screener_run_then_queue_list(tmp_path: Path, capsys):
+    from internship_agent.screener.models import Screening
+    from tests.fakes import FakeLLM
+
+    db, criteria = _seeded(tmp_path)
+    llm = FakeLLM(
+        [
+            Screening(
+                fit_score=s,
+                reason=f"reason-{s}",
+                is_internship=True,
+                matched_requirements=[],
+                missing_requirements=[],
+                disqualifiers=[],
+            )
+            for s in (81, 33, 90)
+        ]
+    )
+    main(["screener", "run", "--db", str(db), "--criteria", str(criteria)], backend=llm)
+    capsys.readouterr()
+
+    code = main(["queue", "list", "--db", str(db), "--criteria", str(criteria)])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "reason-90" in out and "reason-81" in out and "reason-33" not in out
+    assert out.index("reason-90") < out.index("reason-81")
+    assert "2 queued" in out
