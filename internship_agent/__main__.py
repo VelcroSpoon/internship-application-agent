@@ -29,7 +29,7 @@ from internship_agent.db.migrate import migrate
 from internship_agent.llm.base import LLMTransportError, StructuredLLM
 from internship_agent.scout.run import run_scout
 from internship_agent.screener.queue import queue_postings
-from internship_agent.screener.run import run_screener
+from internship_agent.screener.run import PREFILTER_MODEL, run_screener
 
 
 def _open(db_path: Path):
@@ -117,10 +117,14 @@ def cmd_screener_run(
     finally:
         conn.close()
 
-    for r in sorted(summary.results, key=lambda r: -r.fit_score):
+    # Pre-filtered rows are omitted: on a real board they outnumber scored rows
+    # 50:1 and would bury the ones worth reading. The count is in the summary.
+    scored = [r for r in summary.results if r.model != PREFILTER_MODEL]
+    for r in sorted(scored, key=lambda r: -r.fit_score):
+        flags = f"  [{', '.join(r.disqualifiers)}]" if r.disqualifiers else ""
         print(
             f"{r.fit_score:>4}  {r.company[:18]:<18}  {r.title[:44]:<44}  "
-            f"{r.model[:14]:<14}  {r.reason[:70]}"
+            f"{(r.location or '')[:18]:<18}  {r.reason[:60]}{flags}"
         )
     mode = "dry-run, nothing written" if args.dry_run else "written"
     print(

@@ -122,7 +122,8 @@ def test_screener_dry_run_prints_scores_and_writes_nothing(tmp_path: Path, capsy
 
     out = capsys.readouterr().out
     assert code == 0
-    assert "81" in out and "prefilter" in out
+    assert "81" in out and "90" in out
+    assert "title matched no prefilter" not in out  # 200 such rows would bury the real ones
     assert "scored=3" in out and "prefiltered=1" in out
     conn = connect(db)
     assert conn.execute("SELECT COUNT(*) FROM screenings").fetchone()[0] == 0
