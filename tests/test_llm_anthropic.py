@@ -9,7 +9,7 @@ import httpx2
 import pytest
 from pydantic import BaseModel, Field
 
-from internship_agent.llm.anthropic_backend import AnthropicBackend
+from internship_agent.llm.anthropic_backend import AnthropicBackend, MissingCredentials
 from internship_agent.llm.base import LLMOutputError, LLMTransportError
 
 
@@ -111,4 +111,31 @@ def test_status_error_maps_to_transport_error():
     backend = AnthropicBackend(model="m", client=client)
 
     with pytest.raises(LLMTransportError, match="boom"):
+        backend.complete(system="s", user="u", schema=Toy)
+
+
+def test_missing_credentials_become_a_clear_transport_error():
+    """The SDK raises a bare TypeError at request time when it cannot resolve
+    a credential. That surfaced as a traceback with no advice; it should be an
+    actionable message instead."""
+    client = FakeClient(
+        TypeError(
+            "Could not resolve authentication method. Expected one of api_key, "
+            "auth_token, or credentials to be set."
+        )
+    )
+    backend = AnthropicBackend(model="claude-opus-5", client=client)
+
+    with pytest.raises(MissingCredentials) as exc:
+        backend.complete(system="s", user="u", schema=Toy)
+
+    assert isinstance(exc.value, LLMTransportError)  # existing handling still applies
+    assert "ANTHROPIC_API_KEY" in str(exc.value)
+
+
+def test_an_unrelated_type_error_is_not_swallowed():
+    client = FakeClient(TypeError("unexpected keyword argument 'foo'"))
+    backend = AnthropicBackend(model="m", client=client)
+
+    with pytest.raises(TypeError, match="unexpected keyword"):
         backend.complete(system="s", user="u", schema=Toy)

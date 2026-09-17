@@ -68,6 +68,7 @@ class LoopResult:
     final_overall: float | None = None
     final_unsupported_claims: int | None = None
     usage: list[dict[str, Any]] = field(default_factory=list)
+    stopped_detail: str | None = None  # the error text, when a model failure stopped it
 
 
 def describe_stop(history: list[Critique]) -> str:
@@ -126,7 +127,7 @@ def run_loop(
 
     history: list[Critique] = []
     usage: list[dict[str, Any]] = []
-    draft, draft_id, round_index, stopped = _first_draft(
+    draft, draft_id, round_index, stopped, detail = _first_draft(
         conn,
         writer_backend,
         posting_id=posting_id,
@@ -138,7 +139,9 @@ def run_loop(
         ts=ts,
     )
     if stopped is not None:
-        return _finish(conn, application_id, posting_id, 0, stopped, history, usage, ts)
+        return _finish(
+            conn, application_id, posting_id, 0, stopped, history, usage, ts, detail=detail
+        )
 
     assert draft is not None
     while True:
@@ -166,6 +169,7 @@ def run_loop(
                 history,
                 usage,
                 ts,
+                detail=str(exc),
             )
         except LLMTransportError as exc:
             _log_failure(conn, "critic.failed", posting_id, application_id, round_index, exc, ts)
@@ -178,6 +182,7 @@ def run_loop(
                 history,
                 usage,
                 ts,
+                detail=str(exc),
             )
 
         history.append(critic_result.critique)
@@ -210,9 +215,17 @@ def run_loop(
                 config=settings.writer,
                 now=ts,
             )
-        except LLMOutputError:
+        except LLMOutputError as exc:
             return _finish(
-                conn, application_id, posting_id, next_round, "writer_failed", history, usage, ts
+                conn,
+                application_id,
+                posting_id,
+                next_round,
+                "writer_failed",
+                history,
+                usage,
+                ts,
+                detail=str(exc),
             )
         except LLMTransportError as exc:
             _log_failure(conn, "writer.failed", posting_id, application_id, next_round, exc, ts)
@@ -225,6 +238,7 @@ def run_loop(
                 history,
                 usage,
                 ts,
+                detail=str(exc),
             )
 
         draft, draft_id, round_index = revision.draft, revision.draft_id, next_round
@@ -245,7 +259,7 @@ def _first_draft(
     settings: CriteriaFile,
     usage: list[dict[str, Any]],
     ts: str,
-) -> tuple[Draft | None, int | None, int, str | None]:
+) -> tuple[Draft | None, int | None, int, str | None, str | None]:
     """Reuse the newest existing draft, or write round 0. A draft made by
     `writer draft` is picked up here rather than duplicated."""
     existing = conn.execute(
@@ -253,7 +267,7 @@ def _first_draft(
         (application_id,),
     ).fetchone()
     if existing is not None:
-        return _load_draft(existing), existing["id"], existing["round_index"], None
+        return _load_draft(existing), existing["id"], existing["round_index"], None, None
 
     try:
         result = run_writer(
@@ -265,14 +279,14 @@ def _first_draft(
             config=settings.writer,
             now=ts,
         )
-    except LLMOutputError:
-        return None, None, 0, "writer_failed"
+    except LLMOutputError as exc:
+        return None, None, 0, "writer_failed", str(exc)
     except LLMTransportError as exc:
         _log_failure(conn, "writer.failed", posting_id, application_id, 0, exc, ts)
-        return None, None, 0, "backend_unreachable"
+        return None, None, 0, "backend_unreachable", str(exc)
 
     usage.append({"agent": "writer", "round": 0, **result.usage})
-    return result.draft, result.draft_id, 0, None
+    return result.draft, result.draft_id, 0, None, None
 
 
 def _load_draft(row: sqlite3.Row) -> Draft:
@@ -313,6 +327,7 @@ def _finish(
     history: list[Critique],
     usage: list[dict[str, Any]],
     ts: str,
+    detail: str | None = None,
 ) -> LoopResult:
     latest = history[-1] if history else None
     # Hand it to the human only if there is something to look at.
@@ -329,6 +344,7 @@ def _finish(
         payload={
             "rounds_completed": rounds_completed,
             "stopped_because": stopped_because,
+            "stopped_detail": detail,
             "final_overall": latest.overall if latest else None,
             "final_unsupported_claims": latest.unsupported_claim_count if latest else None,
             "scores_by_round": [{"round": c.round_index, "overall": c.overall} for c in history],
@@ -343,4 +359,5 @@ def _finish(
         final_overall=latest.overall if latest else None,
         final_unsupported_claims=latest.unsupported_claim_count if latest else None,
         usage=usage,
+        stopped_detail=detail,
     )

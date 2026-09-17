@@ -356,3 +356,34 @@ def test_approving_something_not_in_review_fails_cleanly(tmp_path: Path, capsys)
 
     assert code == 1
     assert "drafting" in capsys.readouterr().err
+
+
+def test_loop_run_reports_why_a_model_failure_stopped_it(tmp_path: Path, capsys):
+    from internship_agent.llm.base import LLMTransportError
+    from tests.fakes import FakeLLM
+
+    db, _ = _seeded(tmp_path)
+    criteria, voice = _loop_criteria(tmp_path), _voice_file(tmp_path)
+    capsys.readouterr()
+
+    code = main(
+        [
+            "loop",
+            "run",
+            "--posting",
+            "1",
+            "--db",
+            str(db),
+            "--criteria",
+            str(criteria),
+            "--voice",
+            str(voice),
+        ],
+        backend=_draft_backend(),
+        critic_backend=FakeLLM([LLMTransportError("no Anthropic credential found. Set ...")]),
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "backend_unreachable" in captured.out
+    assert "no Anthropic credential found" in captured.err

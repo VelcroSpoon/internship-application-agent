@@ -22,6 +22,15 @@ from internship_agent.llm.base import LLMOutputError, LLMResponse, LLMTransportE
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
+# The SDK resolves a credential from ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or
+# an `ant auth login` profile, and raises a bare TypeError at request time when
+# it cannot. Caught and rewritten so the CLI can say what to do about it.
+_AUTH_HINT = "Could not resolve authentication method"
+
+
+class MissingCredentials(LLMTransportError):
+    pass
+
 
 class AnthropicBackend:
     def __init__(
@@ -52,6 +61,13 @@ class AnthropicBackend:
             raise LLMTransportError(f"anthropic {self.model}: connection error: {exc}") from exc
         except anthropic.APIStatusError as exc:
             raise LLMTransportError(f"anthropic {self.model}: {exc.message}") from exc
+        except TypeError as exc:
+            if _AUTH_HINT not in str(exc):
+                raise
+            raise MissingCredentials(
+                "no Anthropic credential found. Set ANTHROPIC_API_KEY in your "
+                "environment, or run `ant auth login` to store a profile."
+            ) from exc
 
         text = "".join(b.text for b in response.content if getattr(b, "type", "") == "text")
         if response.stop_reason == "refusal":

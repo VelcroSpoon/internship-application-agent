@@ -280,7 +280,7 @@ def cmd_loop_run(
         f"stopped_because={result.stopped_because}"
     )
     if result.stopped_because in {"critic_failed", "writer_failed", "backend_unreachable"}:
-        print("  (stopped on a model failure; see the events table)", file=sys.stderr)
+        print(f"  stopped on a model failure: {result.stopped_detail}", file=sys.stderr)
     conn = _open(args.db)
     state = conn.execute(
         "SELECT status FROM applications WHERE id = ?", (result.application_id,)
