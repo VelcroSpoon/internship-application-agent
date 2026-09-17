@@ -157,3 +157,81 @@ def test_screener_run_then_queue_list(tmp_path: Path, capsys):
     assert "reason-90" in out and "reason-81" in out and "reason-33" not in out
     assert out.index("reason-90") < out.index("reason-81")
     assert "2 queued" in out
+
+
+# --- writer + drafts --------------------------------------------------------
+
+
+def _draft_backend():
+    from internship_agent.writer.models import Bullet, Draft
+    from tests.fakes import FakeLLM
+
+    letter = "I built a MinHash deduper in pandas for 40k tickets. " * 8
+    return FakeLLM(
+        [
+            Draft(
+                bullets=[
+                    Bullet(text=f"Bullet {i} on PyTorch.", resume_anchor=f"line {i}")
+                    for i in range(3)
+                ],
+                cover_letter=letter,
+            )
+        ]
+    )
+
+
+def test_writer_draft_dry_run_prints_draft_and_writes_nothing(tmp_path: Path, capsys):
+    db, criteria = _seeded(tmp_path)
+    capsys.readouterr()
+
+    code = main(
+        [
+            "writer",
+            "draft",
+            "--posting",
+            "1",
+            "--db",
+            str(db),
+            "--criteria",
+            str(criteria),
+            "--dry-run",
+        ],
+        backend=_draft_backend(),
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Bullet 0 on PyTorch." in out and "MinHash deduper" in out
+    assert "dry-run" in out
+    conn = connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == 0
+    conn.close()
+
+
+def test_writer_draft_persists_then_drafts_show_renders_it(tmp_path: Path, capsys):
+    db, criteria = _seeded(tmp_path)
+    capsys.readouterr()
+
+    code = main(
+        ["writer", "draft", "--posting", "1", "--db", str(db), "--criteria", str(criteria)],
+        backend=_draft_backend(),
+    )
+    out = capsys.readouterr().out
+    assert code == 0 and "application 1" in out and "draft 1" in out
+
+    code = main(["drafts", "show", "--application", "1", "--db", str(db)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "round 0" in out and "Bullet 2 on PyTorch." in out and "line 2" in out
+
+
+def test_writer_draft_refuses_second_draft(tmp_path: Path, capsys):
+    db, criteria = _seeded(tmp_path)
+    args = ["writer", "draft", "--posting", "1", "--db", str(db), "--criteria", str(criteria)]
+    main(args, backend=_draft_backend())
+    capsys.readouterr()
+
+    code = main(args, backend=_draft_backend())
+
+    assert code == 1
+    assert "already has a draft" in capsys.readouterr().err

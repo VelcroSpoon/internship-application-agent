@@ -7,6 +7,7 @@ this file parses arguments, opens the database, and prints results.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from collections.abc import Sequence
@@ -18,18 +19,21 @@ from internship_agent.config import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_CRITERIA_PATH,
     DEFAULT_DB_PATH,
+    DEFAULT_VOICE_PATH,
     build_backend,
     build_sources,
     load_config,
     load_criteria,
+    load_voice,
     resolve_resume_path,
 )
 from internship_agent.db.connection import connect
 from internship_agent.db.migrate import migrate
-from internship_agent.llm.base import LLMTransportError, StructuredLLM
+from internship_agent.llm.base import LLMOutputError, LLMTransportError, StructuredLLM
 from internship_agent.scout.run import run_scout
 from internship_agent.screener.queue import queue_postings
 from internship_agent.screener.run import PREFILTER_MODEL, run_screener
+from internship_agent.writer.run import AlreadyDrafted, run_writer
 
 
 def _open(db_path: Path):
@@ -148,6 +152,85 @@ def cmd_queue_list(args: argparse.Namespace, **_: object) -> int:
     return 0
 
 
+# --- writer / drafts ----------------------------------------------------------
+
+
+def cmd_writer_draft(
+    args: argparse.Namespace, backend: StructuredLLM | None = None, **_: object
+) -> int:
+    settings = load_criteria(args.criteria)
+    resume_text = resolve_resume_path(settings).read_text(encoding="utf-8")
+    voice = load_voice(args.voice)
+    backend = backend or build_backend(settings.writer)
+    conn = _open(args.db)
+    try:
+        result = run_writer(
+            conn,
+            backend,
+            posting_id=args.posting,
+            resume_text=resume_text,
+            voice=voice,
+            config=settings.writer,
+            dry_run=args.dry_run,
+        )
+    except AlreadyDrafted as exc:
+        print(f"writer: {exc}", file=sys.stderr)
+        return 1
+    except LookupError as exc:
+        print(f"writer: {exc}", file=sys.stderr)
+        return 1
+    except LLMOutputError as exc:
+        print(f"writer: no valid draft after retries: {exc}", file=sys.stderr)
+        return 1
+    except LLMTransportError as exc:
+        print(f"writer: backend unreachable: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+
+    print(result.draft.as_text())
+    for b in result.draft.bullets:
+        print(f"  anchor: {b.resume_anchor}")
+    if result.voice_hits:
+        print("\nVOICE hits: " + "; ".join(result.voice_hits))
+    usage = result.usage
+    where = (
+        "dry-run, nothing written"
+        if args.dry_run
+        else f"application {result.application_id}, draft {result.draft_id}, round 0"
+    )
+    print(
+        f"\nwriter ({where}): model={result.model} "
+        f"in={usage.get('prompt_tokens')} out={usage.get('completion_tokens')} "
+        f"cached={usage.get('cache_read_input_tokens')}"
+    )
+    return 0
+
+
+def cmd_drafts_show(args: argparse.Namespace, **_: object) -> int:
+    conn = _open(args.db)
+    rows = conn.execute(
+        "SELECT d.*, p.company, p.title FROM drafts d "
+        "JOIN applications a ON a.id = d.application_id "
+        "JOIN postings p ON p.id = a.posting_id "
+        "WHERE d.application_id = ? ORDER BY d.round_index",
+        (args.application,),
+    ).fetchall()
+    conn.close()
+    if not rows:
+        print(f"no drafts for application {args.application}", file=sys.stderr)
+        return 1
+    for r in rows:
+        print(f"=== {r['company']} / {r['title']} : round {r['round_index']} (draft {r['id']}) ===")
+        print("## Bullets\n")
+        for b in json.loads(r["bullets_json"]):
+            print(f"- {b['text']}\n  anchor: {b['resume_anchor']}")
+        print("\n## Cover letter\n")
+        print(r["cover_letter"].strip())
+        print()
+    return 0
+
+
 # --- parser -------------------------------------------------------------------
 
 
@@ -199,6 +282,22 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command", required=True
     )
     queue.add_parser("list", parents=[common, criteria_opt]).set_defaults(func=cmd_queue_list)
+
+    writer = groups.add_parser("writer", help="draft application materials").add_subparsers(
+        dest="command", required=True
+    )
+    wdraft = writer.add_parser("draft", parents=[common, criteria_opt])
+    wdraft.add_argument("--posting", type=int, required=True, help="posting id to draft for")
+    wdraft.add_argument("--voice", type=Path, default=DEFAULT_VOICE_PATH)
+    wdraft.add_argument("--dry-run", action="store_true", help="draft and print, write nothing")
+    wdraft.set_defaults(func=cmd_writer_draft)
+
+    drafts = groups.add_parser("drafts", help="inspect drafts").add_subparsers(
+        dest="command", required=True
+    )
+    dshow = drafts.add_parser("show", parents=[common])
+    dshow.add_argument("--application", type=int, required=True)
+    dshow.set_defaults(func=cmd_drafts_show)
     return parser
 
 
