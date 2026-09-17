@@ -15,6 +15,7 @@ from pathlib import Path
 
 import httpx
 
+from internship_agent.agents.critic import Critique
 from internship_agent.config import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_CRITERIA_PATH,
@@ -30,6 +31,14 @@ from internship_agent.config import (
 from internship_agent.db.connection import connect
 from internship_agent.db.migrate import migrate
 from internship_agent.llm.base import LLMOutputError, LLMTransportError, StructuredLLM
+from internship_agent.orchestrator import LoopRefused, run_loop
+from internship_agent.review import (
+    InvalidTransition,
+    approve,
+    list_applications,
+    mark_submitted,
+    reject,
+)
 from internship_agent.scout.run import run_scout
 from internship_agent.screener.queue import queue_postings
 from internship_agent.screener.run import PREFILTER_MODEL, run_screener
@@ -231,6 +240,150 @@ def cmd_drafts_show(args: argparse.Namespace, **_: object) -> int:
     return 0
 
 
+# --- loop ---------------------------------------------------------------------
+
+
+def cmd_loop_run(
+    args: argparse.Namespace,
+    backend: StructuredLLM | None = None,
+    critic_backend: StructuredLLM | None = None,
+    **_: object,
+) -> int:
+    settings = load_criteria(args.criteria)
+    resume_text = resolve_resume_path(settings).read_text(encoding="utf-8")
+    voice = load_voice(args.voice)
+    conn = _open(args.db)
+    try:
+        result = run_loop(
+            conn,
+            writer_backend=backend or build_backend(settings.writer),
+            critic_backend=critic_backend or build_backend(settings.critic),
+            posting_id=args.posting,
+            resume_text=resume_text,
+            voice=voice,
+            settings=settings,
+        )
+    except (LoopRefused, LookupError) as exc:
+        print(f"loop: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+
+    for c in result.history:
+        scores = "  ".join(f"{s.dimension.value[:4]} {s.score}" for s in c.scores)
+        print(
+            f"round {c.round_index}: overall {c.overall:.2f}  blockers "
+            f"{c.unsupported_claim_count}  findings {len(c.findings)}  [{scores}]"
+        )
+    print(
+        f"\nloop: application {result.application_id} rounds={result.rounds_completed} "
+        f"stopped_because={result.stopped_because}"
+    )
+    if result.stopped_because in {"critic_failed", "writer_failed", "backend_unreachable"}:
+        print("  (stopped on a model failure; see the events table)", file=sys.stderr)
+    conn = _open(args.db)
+    state = conn.execute(
+        "SELECT status FROM applications WHERE id = ?", (result.application_id,)
+    ).fetchone()
+    conn.close()
+    print(
+        f"  status: {state['status']}   review it with: applications show --id "
+        f"{result.application_id}"
+    )
+    return 0
+
+
+# --- applications (the human gate) ---------------------------------------------
+
+
+def cmd_applications_list(args: argparse.Namespace, **_: object) -> int:
+    conn = _open(args.db)
+    rows = list_applications(conn, status=args.status)
+    conn.close()
+    for r in rows:
+        first = f"{r['first_overall']:.2f}" if r["first_overall"] is not None else "  - "
+        final = f"{r['final_overall']:.2f}" if r["final_overall"] is not None else "  - "
+        print(
+            f"{r['application_id']:>4}  {r['status']:<15}  {r['company'][:18]:<18}  "
+            f"{r['title'][:38]:<38}  rounds {r['rounds']}  {first} -> {final}"
+        )
+    print(f"{len(rows)} application(s)")
+    return 0
+
+
+def cmd_applications_show(args: argparse.Namespace, **_: object) -> int:
+    conn = _open(args.db)
+    app = conn.execute(
+        "SELECT a.*, p.company, p.title, p.location, p.url FROM applications a "
+        "JOIN postings p ON p.id = a.posting_id WHERE a.id = ?",
+        (args.id,),
+    ).fetchone()
+    if app is None:
+        conn.close()
+        print(f"no application with id {args.id}", file=sys.stderr)
+        return 1
+    print(f"{app['company']} / {app['title']} ({app['location'] or 'n/a'})")
+    print(f"{app['url']}")
+    print(f"status: {app['status']}\n")
+
+    rows = conn.execute(
+        "SELECT d.*, c.critique_json FROM drafts d "
+        "LEFT JOIN critiques c ON c.draft_id = d.id "
+        "WHERE d.application_id = ? ORDER BY d.round_index",
+        (args.id,),
+    ).fetchall()
+    conn.close()
+    for r in rows:
+        print(f"{'=' * 70}\nround {r['round_index']}  (draft {r['id']}, {r['writer_model']})")
+        extra = json.loads(r["usage_json"]) if r["usage_json"] else {}
+        if extra.get("voice_hits"):
+            print(f"  VOICE hits: {'; '.join(extra['voice_hits'])}")
+        if extra.get("critique_leaks"):
+            print(f"  CRITIQUE LEAKS: {'; '.join(extra['critique_leaks'])}")
+        print("\n## Bullets\n")
+        for b in json.loads(r["bullets_json"]):
+            print(f"- {b['text']}\n  anchor: {b['resume_anchor']}")
+        print("\n## Cover letter\n")
+        print(r["cover_letter"].strip())
+        if r["critique_json"]:
+            _print_critique(Critique.model_validate_json(r["critique_json"]))
+        print()
+    return 0
+
+
+def _print_critique(c: Critique) -> None:
+    print(f"\n## Critique (overall {c.overall:.2f}, verdict {c.verdict.value})\n")
+    for s in c.scores:
+        print(f"  {s.dimension.value:<12} {s.score}/5  {s.reason}")
+    if c.missing_requirements:
+        print("\n  Unaddressed requirements the resume could support:")
+        for m in c.missing_requirements:
+            print(f"    - {m}")
+    if c.findings:
+        print(f"\n  Findings ({c.unsupported_claim_count} blocker-grounding):")
+        for f in c.findings:
+            print(f"    [{f.severity.value}/{f.dimension.value}/{f.section}] {f.excerpt!r}")
+            print(f"       problem:   {f.problem}")
+            print(f"       direction: {f.fix_direction}")
+
+
+def cmd_applications_decide(args: argparse.Namespace, **_: object) -> int:
+    action = {"approve": approve, "reject": reject, "mark-submitted": mark_submitted}[args.command]
+    conn = _open(args.db)
+    try:
+        action(conn, args.id, note=args.note)
+    except (InvalidTransition, LookupError) as exc:
+        print(f"applications: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    done = {"approve": "approved", "reject": "rejected", "mark-submitted": "marked submitted"}
+    print(f"application {args.id}: {done[args.command]}")
+    if args.command == "approve":
+        print("  Nothing is submitted for you. Copy the draft and apply yourself.")
+    return 0
+
+
 # --- parser -------------------------------------------------------------------
 
 
@@ -292,6 +445,33 @@ def build_parser() -> argparse.ArgumentParser:
     wdraft.add_argument("--dry-run", action="store_true", help="draft and print, write nothing")
     wdraft.set_defaults(func=cmd_writer_draft)
 
+    loop = groups.add_parser("loop", help="writer/critic revision loop").add_subparsers(
+        dest="command", required=True
+    )
+    lrun = loop.add_parser("run", parents=[common, criteria_opt])
+    lrun.add_argument("--posting", type=int, required=True)
+    lrun.add_argument("--voice", type=Path, default=DEFAULT_VOICE_PATH)
+    lrun.set_defaults(func=cmd_loop_run)
+
+    apps = groups.add_parser("applications", help="review and decide").add_subparsers(
+        dest="command", required=True
+    )
+    alist = apps.add_parser("list", parents=[common])
+    alist.add_argument("--status", default=None)
+    alist.set_defaults(func=cmd_applications_list)
+    ashow = apps.add_parser("show", parents=[common])
+    ashow.add_argument("--id", type=int, required=True)
+    ashow.set_defaults(func=cmd_applications_show)
+    for name, helptext in (
+        ("approve", "accept the draft; you still submit it yourself"),
+        ("reject", "discard this application"),
+        ("mark-submitted", "record that you submitted it"),
+    ):
+        sub = apps.add_parser(name, parents=[common], help=helptext)
+        sub.add_argument("--id", type=int, required=True)
+        sub.add_argument("--note", default="")
+        sub.set_defaults(func=cmd_applications_decide)
+
     drafts = groups.add_parser("drafts", help="inspect drafts").add_subparsers(
         dest="command", required=True
     )
@@ -306,13 +486,14 @@ def main(
     *,
     client: httpx.Client | None = None,
     backend: StructuredLLM | None = None,
+    critic_backend: StructuredLLM | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
-    return args.func(args, client=client, backend=backend)
+    return args.func(args, client=client, backend=backend, critic_backend=critic_backend)
 
 
 if __name__ == "__main__":

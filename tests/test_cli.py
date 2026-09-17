@@ -162,7 +162,7 @@ def test_screener_run_then_queue_list(tmp_path: Path, capsys):
 # --- writer + drafts --------------------------------------------------------
 
 
-def _draft_backend():
+def _draft_backend(rounds: int = 1):
     from internship_agent.writer.models import Bullet, Draft
     from tests.fakes import FakeLLM
 
@@ -176,6 +176,7 @@ def _draft_backend():
                 ],
                 cover_letter=letter,
             )
+            for _ in range(rounds)
         ]
     )
 
@@ -235,3 +236,123 @@ def test_writer_draft_refuses_second_draft(tmp_path: Path, capsys):
 
     assert code == 1
     assert "already has a draft" in capsys.readouterr().err
+
+
+# --- loop + review ----------------------------------------------------------
+
+
+def _loop_criteria(tmp_path: Path) -> Path:
+    resume = tmp_path / "resume.md"
+    resume.write_text("# Jane\n- Python, PyTorch\n", encoding="utf-8")
+    p = tmp_path / "loop_criteria.toml"
+    p.write_text(
+        f'[candidate]\nmaster_resume_path = "{resume.as_posix()}"\n'
+        '[criteria]\ntarget_cycle = "Summer 2027"\n'
+        '[screener]\nmodel = "fake"\n'
+        '[writer]\nmodel = "fake"\n'
+        '[critic]\nmodel = "fake"\n',
+        encoding="utf-8",
+    )
+    return p
+
+
+def _voice_file(tmp_path: Path) -> Path:
+    p = tmp_path / "voice.toml"
+    p.write_text('[voice]\nbanned_phrases = ["passionate about"]\n', encoding="utf-8")
+    return p
+
+
+def test_loop_run_drafts_critiques_and_parks_for_review(tmp_path: Path, capsys):
+    from tests.critique_factory import critique
+    from tests.fakes import FakeLLM
+
+    db, _ = _seeded(tmp_path)
+    criteria, voice = _loop_criteria(tmp_path), _voice_file(tmp_path)
+    capsys.readouterr()
+
+    code = main(
+        [
+            "loop",
+            "run",
+            "--posting",
+            "1",
+            "--db",
+            str(db),
+            "--criteria",
+            str(criteria),
+            "--voice",
+            str(voice),
+        ],
+        backend=_draft_backend(),
+        critic_backend=FakeLLM([critique(0, default_score=5)]),
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "round 0" in out and "5.0" in out
+    assert "quality_bar" in out
+    assert "awaiting_review" in out
+    conn = connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM critiques").fetchone()[0] == 1
+    assert conn.execute("SELECT status FROM applications").fetchone()[0] == "awaiting_review"
+    conn.close()
+
+
+def test_applications_list_then_show_then_approve(tmp_path: Path, capsys):
+    from tests.critique_factory import critique, finding
+    from tests.fakes import FakeLLM
+
+    db, _ = _seeded(tmp_path)
+    criteria, voice = _loop_criteria(tmp_path), _voice_file(tmp_path)
+    main(
+        [
+            "loop",
+            "run",
+            "--posting",
+            "1",
+            "--db",
+            str(db),
+            "--criteria",
+            str(criteria),
+            "--voice",
+            str(voice),
+        ],
+        backend=_draft_backend(rounds=2),
+        critic_backend=FakeLLM(
+            [
+                critique(0, default_score=5, findings=[finding()]),  # blocker -> revise
+                critique(1, default_score=5),  # clean -> stop
+            ]
+        ),
+    )
+    capsys.readouterr()
+
+    assert main(["applications", "list", "--db", str(db)]) == 0
+    out = capsys.readouterr().out
+    assert "awaiting_review" in out and "Scale AI" in out
+
+    assert main(["applications", "show", "--id", "1", "--db", str(db)]) == 0
+    out = capsys.readouterr().out
+    assert "Bullet 0 on PyTorch." in out
+    assert "grounding" in out and "blocker" in out.lower()
+    assert "Cut the user-count claim" in out  # the finding's direction, shown to the human
+
+    assert main(["applications", "approve", "--id", "1", "--db", str(db), "--note", "ok"]) == 0
+    assert "approved" in capsys.readouterr().out
+    conn = connect(db)
+    assert conn.execute("SELECT status FROM applications").fetchone()[0] == "approved"
+    conn.close()
+
+
+def test_approving_something_not_in_review_fails_cleanly(tmp_path: Path, capsys):
+    db, criteria = _seeded(tmp_path)
+    main(
+        ["writer", "draft", "--posting", "1", "--db", str(db), "--criteria", str(criteria)],
+        backend=_draft_backend(),
+    )
+    capsys.readouterr()
+
+    code = main(["applications", "approve", "--id", "1", "--db", str(db)])
+
+    assert code == 1
+    assert "drafting" in capsys.readouterr().err
