@@ -10,11 +10,15 @@ instead of silently disabling something.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from internship_agent.llm.base import StructuredLLM
+from internship_agent.llm.ollama import OllamaBackend
 from internship_agent.scout.base import Source
 from internship_agent.scout.greenhouse import GreenhouseSource
 
@@ -55,3 +59,70 @@ def build_sources(scout: ScoutConfig) -> list[Source]:
         GreenhouseSource(board=b.board, company=b.company, user_agent=scout.user_agent)
         for b in scout.greenhouse
     ]
+
+
+# --- criteria.toml: what the Screener looks for -----------------------------------
+
+DEFAULT_CRITERIA_PATH = Path(
+    os.environ.get("INTERNSHIP_AGENT_CRITERIA", REPO_ROOT / "config" / "criteria.toml")
+)
+
+
+class CandidateConfig(_Strict):
+    master_resume_path: Path
+
+
+class CriteriaConfig(_Strict):
+    target_cycle: str = Field(min_length=1)
+    target_roles: list[str] = Field(default_factory=list)
+    acceptable_locations: list[str] = Field(default_factory=list)
+    hard_disqualifiers: list[str] = Field(default_factory=list)
+    queue_threshold: int = Field(default=70, ge=0, le=100)
+
+
+class PrefilterConfig(_Strict):
+    title_patterns: list[str] = Field(default_factory=list)
+
+    @field_validator("title_patterns")
+    @classmethod
+    def _must_compile(cls, patterns: list[str]) -> list[str]:
+        for p in patterns:
+            try:
+                re.compile(p, re.IGNORECASE)
+            except re.error as exc:
+                raise ValueError(f"bad regex {p!r}: {exc}") from exc
+        return patterns
+
+    def compiled(self) -> list[re.Pattern[str]]:
+        return [re.compile(p, re.IGNORECASE) for p in self.title_patterns]
+
+
+class ScreenerConfig(_Strict):
+    backend: Literal["ollama"] = "ollama"
+    model: str = Field(min_length=1)
+    ollama_host: str = "http://localhost:11434"
+    description_max_chars: int = Field(default=6000, ge=500)
+    max_attempts: int = Field(default=2, ge=1, le=5)
+
+
+class CriteriaFile(_Strict):
+    candidate: CandidateConfig
+    criteria: CriteriaConfig
+    prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
+    screener: ScreenerConfig
+
+
+def load_criteria(path: Path = DEFAULT_CRITERIA_PATH) -> CriteriaFile:
+    with open(path, "rb") as f:
+        return CriteriaFile.model_validate(tomllib.load(f))
+
+
+def resolve_resume_path(cf: CriteriaFile) -> Path:
+    p = cf.candidate.master_resume_path
+    return p if p.is_absolute() else REPO_ROOT / p
+
+
+def build_screener_backend(cfg: ScreenerConfig) -> StructuredLLM:
+    if cfg.backend == "ollama":
+        return OllamaBackend(model=cfg.model, host=cfg.ollama_host)
+    raise ValueError(f"unknown screener backend {cfg.backend!r}")  # unreachable via Literal

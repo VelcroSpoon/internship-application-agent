@@ -1,0 +1,43 @@
+# What the Screener is looking for. Edit freely; unknown keys are rejected.
+
+[candidate]
+# Markdown file the Screener and Writer treat as the sole source of truth
+# about you. Relative paths resolve against the repo root.
+master_resume_path = "config/master_resume.md"
+
+[criteria]
+target_cycle = "Summer 2027"
+# What kinds of roles you want. Shown to the model as the target, in words.
+target_roles = [
+    "software engineering internship with an AI/ML focus",
+    "machine learning engineering internship",
+    "applied AI / LLM infrastructure internship",
+]
+# Locations you can actually work from. The model treats anything else as a
+# disqualifier unless the posting says remote.
+acceptable_locations = ["Montreal, QC", "Toronto, ON", "Remote (Canada)", "Remote (US)"]
+# Things that should push a posting out of the queue regardless of fit.
+hard_disqualifiers = [
+    "requires an active security clearance",
+    "requires a PhD or PhD enrolment",
+    "requires 3+ years of full-time professional experience",
+]
+# Fit score at or above this lands in the drafting queue.
+queue_threshold = 70
+
+[prefilter]
+# Case-insensitive regexes. A posting whose title matches NONE of these gets a
+# zero-score screening row from the 'prefilter' model and never reaches the
+# LLM. Empty list = screen every posting (slow on CPU-only machines).
+title_patterns = ["\\bintern(ship)?\\b", "\\bco-?op\\b", "summer 20\\d\\d", "\\bnew grad\\b"]
+
+[screener]
+backend = "ollama"            # 'ollama' now; 'anthropic' once the Writer lands
+model = "qwen2.5:3b"
+ollama_host = "http://localhost:11434"
+# Postings are truncated to this many characters before prompting. Greenhouse
+# descriptions run 7-10k characters and the requirements are almost always in
+# the first half.
+description_max_chars = 6000
+# One retry on schema failure, then skip the posting until the next run.
+max_attempts = 2

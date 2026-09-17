@@ -66,3 +66,48 @@ def test_shipped_config_loads_and_names_a_contact_in_user_agent():
 
     assert cfg.scout.greenhouse, "shipped config must list at least one board"
     assert "+" in cfg.scout.user_agent, "User-Agent should carry a contact URL or mailto"
+
+
+# --- criteria.toml ----------------------------------------------------------
+
+
+def test_shipped_criteria_loads_and_resume_exists():
+    from internship_agent.config import DEFAULT_CRITERIA_PATH, load_criteria, resolve_resume_path
+
+    cf = load_criteria(DEFAULT_CRITERIA_PATH)
+
+    assert cf.criteria.target_cycle == "Summer 2027"
+    assert 0 <= cf.criteria.queue_threshold <= 100
+    assert cf.screener.backend == "ollama"
+    assert resolve_resume_path(cf).is_file()
+
+
+def test_criteria_prefilter_patterns_must_compile(tmp_path: Path):
+    from internship_agent.config import load_criteria
+
+    p = tmp_path / "criteria.toml"
+    p.write_text(
+        '[candidate]\nmaster_resume_path = "r.md"\n'
+        '[criteria]\ntarget_cycle = "S"\n'
+        '[prefilter]\ntitle_patterns = ["(unclosed"]\n'
+        '[screener]\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_criteria(p)
+
+
+def test_criteria_screener_backend_is_restricted_to_known_values(tmp_path: Path):
+    from internship_agent.config import load_criteria
+
+    p = tmp_path / "criteria.toml"
+    p.write_text(
+        '[candidate]\nmaster_resume_path = "r.md"\n'
+        '[criteria]\ntarget_cycle = "S"\n'
+        '[screener]\nmodel = "m"\nbackend = "openai"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_criteria(p)
