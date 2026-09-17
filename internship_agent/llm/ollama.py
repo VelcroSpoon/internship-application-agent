@@ -26,7 +26,9 @@ class OllamaBackend:
         *,
         client: httpx.Client | None = None,
         num_ctx: int = 4096,
-        timeout_s: float = 300.0,
+        # CPU-only inference on an 8 GB machine has hit 120 s per posting under
+        # memory pressure; 300 s produced a spurious timeout on a live run.
+        timeout_s: float = 900.0,
     ) -> None:
         self.model = model
         self.host = host.rstrip("/")
