@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import sqlite3
 
+from internship_agent.agents.critic import Critique
 from internship_agent.config import VoiceConfig
+from internship_agent.writer.models import Draft
 
 
 def build_system(resume_text: str, voice: VoiceConfig) -> str:
@@ -62,3 +64,65 @@ Location: {posting["location"] or "(not stated)"}
 {(posting["description"] or "").strip()}
 
 Write the tailored bullets and the cover letter for this posting."""
+
+
+def build_revision_user(posting: sqlite3.Row, previous: Draft, critique: Critique) -> str:
+    """Revision turn: the previous draft plus the Critic's diagnoses.
+
+    Findings are passed as diagnosis (what is wrong, where) and direction
+    (what to do), never as replacement text, and the instruction says to act
+    on them in the writer's own words. The Critic must not end up writing the
+    draft through the Writer's hands.
+    """
+    findings = (
+        "\n\n".join(
+            f"{i + 1}. [{f.severity.value.upper()} / {f.dimension.value} / {f.section}]\n"
+            f"   Quoted from your draft: {f.excerpt!r}\n"
+            f"   Problem: {f.problem}\n"
+            f"   Direction: {f.fix_direction}"
+            + (f"\n   Relevant resume line: {f.resume_anchor}" if f.resume_anchor else "")
+            for i, f in enumerate(critique.findings)
+        )
+        or "(no specific findings)"
+    )
+    missing = (
+        "\n".join(f"- {m}" for m in critique.missing_requirements)
+        if critique.missing_requirements
+        else "(none)"
+    )
+    scores = ", ".join(f"{s.dimension.value} {s.score}/5" for s in critique.scores)
+
+    return f"""# Posting
+Company: {posting["company"]}
+Title: {posting["title"]}
+Location: {posting["location"] or "(not stated)"}
+
+{(posting["description"] or "").strip()}
+
+# Your previous draft
+
+{previous.as_text()}
+
+# Review of that draft
+
+Scores: {scores}
+
+Findings to address:
+
+{findings}
+
+Requirements the posting states, the resume supports, and the draft did not address:
+{missing}
+
+# What to do
+
+Rewrite the bullets and the cover letter, addressing every finding above.
+
+The findings are diagnoses, not copy. Do not paste any part of a Direction
+into the draft; work out what to say yourself and say it in your own words.
+A Direction that says to cut something means cut it, not describe cutting it.
+
+Keep what was already working. A revision that rewrites a sound bullet to look
+different is a worse draft. Every rule from your instructions still applies,
+especially grounding: fixing a finding by inventing a new claim is a worse
+outcome than leaving the finding unfixed."""

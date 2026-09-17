@@ -149,12 +149,21 @@ class WriterConfig(BackendConfig):
     model: str = Field(default="claude-opus-5", min_length=1)
 
 
+class CriticConfig(BackendConfig):
+    # Sonnet: the Critic runs once per round against a fixed rubric, which is
+    # judgement against anchors rather than open-ended generation. Cheaper per
+    # round keeps a 3-round loop affordable.
+    backend: Backend = "anthropic"
+    model: str = Field(default="claude-sonnet-5", min_length=1)
+
+
 class CriteriaFile(_Strict):
     candidate: CandidateConfig
     criteria: CriteriaConfig
     prefilter: PrefilterConfig = Field(default_factory=PrefilterConfig)
     screener: ScreenerConfig
     writer: WriterConfig = Field(default_factory=WriterConfig)
+    critic: CriticConfig = Field(default_factory=CriticConfig)
 
 
 def load_criteria(path: Path = DEFAULT_CRITERIA_PATH) -> CriteriaFile:

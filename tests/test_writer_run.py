@@ -168,3 +168,135 @@ def test_prompt_carries_resume_voice_rules_and_posting(conn):
     assert "Requires PyTorch and MongoDB." in call.user
     # The stable material (resume, rules) is in system so it caches; the posting is not.
     assert "Requires PyTorch" not in call.system
+
+
+# --- revisions --------------------------------------------------------------
+
+
+def _seed_app_and_draft(conn, posting_id: int) -> int:
+    conn.execute(
+        "INSERT INTO applications (posting_id, status, created_at, updated_at) "
+        "VALUES (?, 'drafting', ?, ?)",
+        (posting_id, TS, TS),
+    )
+    conn.execute(
+        "INSERT INTO drafts (application_id, round_index, bullets_json, cover_letter, "
+        "writer_model, created_at) VALUES (1, 0, '[]', 'prev', 'm', ?)",
+        (TS,),
+    )
+    return 1
+
+
+def _revise(conn, llm, posting_id, critique_obj, round_index=1, **kw):
+    from internship_agent.writer.run import write_revision
+
+    posting = conn.execute("SELECT * FROM postings WHERE id = ?", (posting_id,)).fetchone()
+    kw.setdefault("resume_text", "RESUME")
+    kw.setdefault("voice", voice())
+    kw.setdefault("config", writer_cfg())
+    kw.setdefault("now", TS)
+    return write_revision(
+        conn,
+        llm,
+        application_id=1,
+        posting=posting,
+        previous_draft=draft(letter="Previous letter text. " * 20),
+        critique=critique_obj,
+        round_index=round_index,
+        **kw,
+    )
+
+
+def test_revision_persists_at_the_given_round(conn):
+    from tests.critique_factory import critique, finding
+
+    pid = add_posting(conn)
+    _seed_app_and_draft(conn, pid)
+    llm = FakeLLM([draft()])
+
+    result = _revise(conn, llm, pid, critique(findings=[finding()]), round_index=1)
+
+    rows = conn.execute("SELECT round_index FROM drafts ORDER BY round_index").fetchall()
+    assert [r[0] for r in rows] == [0, 1]
+    assert result.round_index == 1 and result.draft_id is not None
+    kinds = [r[0] for r in conn.execute("SELECT kind FROM events ORDER BY id")]
+    assert kinds == ["writer.revised"]
+
+
+def test_revision_prompt_carries_the_previous_draft_and_every_finding(conn):
+    from internship_agent.agents.critic import Dimension, Severity
+    from tests.critique_factory import critique, finding
+
+    pid = add_posting(conn)
+    _seed_app_and_draft(conn, pid)
+    llm = FakeLLM([draft()])
+    c = critique(
+        findings=[
+            finding(fix_direction="Cut the invented user count."),
+            finding(Dimension.DENSITY, Severity.MINOR, fix_direction="Delete the closing line."),
+        ],
+    )
+    c = c.model_copy(update={"missing_requirements": ["Experience with MongoDB"]})
+
+    _revise(conn, llm, pid, c)
+
+    (call,) = llm.calls
+    assert "Previous letter text." in call.user
+    assert "Cut the invented user count." in call.user
+    assert "Delete the closing line." in call.user
+    assert "The resume does not state a user count." in call.user  # the problem, not just the fix
+    assert "blocker" in call.user.lower()
+    assert "Experience with MongoDB" in call.user
+    # The instruction that keeps the Critic out of the prose.
+    assert "your own words" in call.user.lower()
+    # Stable material still cached in system.
+    assert "RESUME" in call.system and "Previous letter text." not in call.system
+
+
+def test_revision_records_leaks_when_the_writer_copies_a_fix_direction(conn):
+    from internship_agent.writer.models import Bullet, Draft
+    from tests.critique_factory import critique, finding
+
+    fix = "Replace the user-count claim with the actual figure from the resume or cut it entirely"
+    pid = add_posting(conn)
+    _seed_app_and_draft(conn, pid)
+    copied = Draft(
+        bullets=[
+            Bullet(text=f"Bullet {i} about PyTorch.", resume_anchor=f"line {i}") for i in range(3)
+        ],
+        cover_letter=f"{fix}. " * 6,
+    )
+    llm = FakeLLM([copied])
+
+    result = _revise(conn, llm, pid, critique(findings=[finding(fix_direction=fix)]))
+
+    assert len(result.critique_leaks) == 1
+    stored = json.loads(
+        conn.execute("SELECT usage_json FROM drafts WHERE round_index = 1").fetchone()[0]
+    )
+    assert stored["critique_leaks"] == result.critique_leaks
+
+
+def test_clean_revision_records_no_leaks(conn):
+    from tests.critique_factory import critique, finding
+
+    pid = add_posting(conn)
+    _seed_app_and_draft(conn, pid)
+
+    result = _revise(
+        conn, llm=FakeLLM([draft()]), posting_id=pid, critique_obj=critique(findings=[finding()])
+    )
+
+    assert result.critique_leaks == []
+
+
+def test_revision_dry_run_writes_nothing(conn):
+    from tests.critique_factory import critique
+
+    pid = add_posting(conn)
+    _seed_app_and_draft(conn, pid)
+
+    result = _revise(conn, FakeLLM([draft()]), pid, critique(), dry_run=True)
+
+    assert result.draft_id is None
+    assert conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == 1

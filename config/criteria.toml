@@ -64,3 +64,13 @@ backend = "anthropic"
 model = "claude-opus-5"
 effort = "medium"
 max_attempts = 2
+
+[critic]
+# The Critic scores drafts against the fixed rubric in
+# internship_agent/agents/critic.py. It never rewrites. Sonnet: judging
+# against anchors is cheaper work than drafting, and a 3-round loop calls it
+# three times per application.
+backend = "anthropic"
+model = "claude-sonnet-5"
+effort = "medium"
+max_attempts = 2
