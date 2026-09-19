@@ -406,6 +406,97 @@ def cmd_serve(args: argparse.Namespace, **_: object) -> int:
     return 0
 
 
+# --- evals ----------------------------------------------------------------------
+
+DEFAULT_EVAL_POSTINGS = (
+    Path(__file__).resolve().parent.parent / "tests" / "fixtures" / ("greenhouse_scaleai.json")
+)
+
+
+def _eval_inputs(args: argparse.Namespace):
+    from internship_agent.scout.greenhouse import parse_jobs
+
+    settings = load_criteria(args.criteria)
+    payload = json.loads(Path(args.postings).read_text(encoding="utf-8"))
+    records = parse_jobs("scaleai", payload, company="Scale AI")
+    resume_text = resolve_resume_path(settings).read_text(encoding="utf-8")
+    return settings, records, resume_text, load_voice(args.voice)
+
+
+def cmd_evals_record(args: argparse.Namespace, **_: object) -> int:
+    from internship_agent.agents.critic import MAX_ROUNDS
+    from internship_agent.evals.run import record
+
+    if args.cassette.exists() and not args.force:
+        print(
+            f"evals: {args.cassette} already exists. Recording costs money and would replace "
+            "it; pass --force if that is what you want.",
+            file=sys.stderr,
+        )
+        return 1
+    settings, records, resume_text, voice = _eval_inputs(args)
+    most = len(records) * (MAX_ROUNDS * 2 + 2)
+    print(
+        f"recording {len(records)} postings: writer {settings.writer.model}, critic "
+        f"{settings.critic.model}, at most {most} model calls"
+    )
+    writer, critic = build_backend(settings.writer), build_backend(settings.critic)
+    runs, cassette = record(
+        records,
+        writer_for=lambda _tag: writer,
+        critic_for=lambda _tag: critic,
+        resume_text=resume_text,
+        voice=voice,
+        settings=settings,
+        cassette_path=args.cassette,
+    )
+    print(f"saved {len(cassette.recordings)} responses to {args.cassette}")
+    for model, c in sorted(cassette.cost_summary().items()):
+        print(f"  {model}: {c['calls']} calls, {c['in']} tokens in, {c['out']} out")
+    print("now run: python -m internship_agent evals run")
+    return 0
+
+
+def cmd_evals_run(args: argparse.Namespace, **_: object) -> int:
+    from internship_agent.evals.cassette import Cassette, CassetteMiss
+    from internship_agent.evals.run import replay, write_report
+
+    if not args.cassette.exists():
+        print(
+            f"evals: no cassette at {args.cassette}. Record one first (costs about two "
+            "dollars, once): python -m internship_agent evals record",
+            file=sys.stderr,
+        )
+        return 1
+    settings, records, resume_text, voice = _eval_inputs(args)
+    cassette = Cassette.load(args.cassette)
+    try:
+        runs = replay(
+            records,
+            cassette=cassette,
+            writer_model=settings.writer.model,
+            critic_model=settings.critic.model,
+            resume_text=resume_text,
+            voice=voice,
+            settings=settings,
+        )
+    except CassetteMiss as exc:
+        print(f"evals: {exc}", file=sys.stderr)
+        return 2
+    summary, report = write_report(runs, cassette, out_dir=args.out)
+    print(summary.verdict)
+    print()
+    for r in summary.by_round:
+        delta = summary.round_deltas.get(r.round_index)
+        shown = "" if delta is None else f"  paired delta {delta:+.2f}"
+        print(f"  round {r.round_index}: {r.mean_overall:.2f} over {r.postings} postings{shown}")
+    if summary.mean_control is not None:
+        print(f"  control (single pass): {summary.mean_control:.2f}")
+    print()
+    print(f"report: {report}")
+    return 0
+
+
 # --- parser -------------------------------------------------------------------
 
 
@@ -493,6 +584,26 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--id", type=int, required=True)
         sub.add_argument("--note", default="")
         sub.set_defaults(func=cmd_applications_decide)
+
+    from internship_agent.evals.run import DEFAULT_CASSETTE, DEFAULT_RESULTS
+
+    evals_opt = argparse.ArgumentParser(add_help=False)
+    evals_opt.add_argument("--cassette", type=Path, default=DEFAULT_CASSETTE)
+    evals_opt.add_argument("--postings", type=Path, default=DEFAULT_EVAL_POSTINGS)
+    evals_opt.add_argument("--voice", type=Path, default=DEFAULT_VOICE_PATH)
+    evals = groups.add_parser("evals", help="does the critic loop help?").add_subparsers(
+        dest="command", required=True
+    )
+    erec = evals.add_parser(
+        "record", parents=[common, criteria_opt, evals_opt], help="call the models once, save"
+    )
+    erec.add_argument("--force", action="store_true", help="replace an existing cassette")
+    erec.set_defaults(func=cmd_evals_record)
+    erun = evals.add_parser(
+        "run", parents=[common, criteria_opt, evals_opt], help="replay the cassette, report"
+    )
+    erun.add_argument("--out", type=Path, default=DEFAULT_RESULTS)
+    erun.set_defaults(func=cmd_evals_run)
 
     serve = groups.add_parser("serve", parents=[common, criteria_opt], help="run the API")
     serve.add_argument("--host", default="127.0.0.1")

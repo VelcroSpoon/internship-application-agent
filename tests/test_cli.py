@@ -387,3 +387,72 @@ def test_loop_run_reports_why_a_model_failure_stopped_it(tmp_path: Path, capsys)
     assert code == 0
     assert "backend_unreachable" in captured.out
     assert "no Anthropic credential found" in captured.err
+
+
+# --- evals ------------------------------------------------------------------
+
+
+def _eval_files(tmp_path: Path):
+    resume = Path(__file__).parent.parent / "config" / "master_resume.md"
+    criteria = tmp_path / "eval_criteria.toml"
+    criteria.write_text(
+        f'[candidate]\nmaster_resume_path = "{resume.as_posix()}"\n'
+        '[criteria]\ntarget_cycle = "Summer 2027"\n'
+        '[screener]\nmodel = "fake"\n[writer]\nmodel = "fake-model"\n'
+        '[critic]\nmodel = "fake-model"\n',
+        encoding="utf-8",
+    )
+    return criteria
+
+
+def test_evals_run_replays_a_cassette_into_a_report(tmp_path: Path, capsys, fake_resume):
+    from internship_agent.config import load_criteria, load_voice
+    from internship_agent.evals.run import record
+    from internship_agent.scout.greenhouse import parse_jobs
+    from tests.test_eval_pipeline import scripted
+
+    criteria = _eval_files(tmp_path)
+    records = parse_jobs(
+        "scaleai", json.loads(FIXTURE.read_text(encoding="utf-8")), company="Scale AI"
+    )
+    backends = scripted()
+    record(
+        records,
+        writer_for=lambda tag: backends[(tag, "writer")],
+        critic_for=lambda tag: backends[(tag, "critic")],
+        resume_text=fake_resume,
+        voice=load_voice(),
+        settings=load_criteria(criteria),
+        cassette_path=tmp_path / "c.json",
+    )
+    capsys.readouterr()
+
+    code = main(
+        [
+            "evals",
+            "run",
+            "--criteria",
+            str(criteria),
+            "--cassette",
+            str(tmp_path / "c.json"),
+            "--postings",
+            str(FIXTURE),
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "round 0:" in out and "control (single pass)" in out
+    assert (tmp_path / "out" / "report.md").exists()
+
+
+def test_evals_record_refuses_to_overwrite_a_paid_for_cassette(tmp_path: Path, capsys):
+    cassette = tmp_path / "c.json"
+    cassette.write_text('{"version": 1, "recordings": []}', encoding="utf-8")
+
+    code = main(["evals", "record", "--cassette", str(cassette)])
+
+    assert code == 1
+    assert "--force" in capsys.readouterr().err
