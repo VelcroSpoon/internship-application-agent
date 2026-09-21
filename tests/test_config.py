@@ -78,7 +78,12 @@ def test_shipped_criteria_loads_and_resume_exists():
 
     assert cf.criteria.target_cycle == "Summer 2027"
     assert 0 <= cf.criteria.queue_threshold <= 100
-    assert cf.screener.backend == "ollama"
+    # Which backend each agent uses is a running choice, not a contract. The
+    # test pins that the shipped file loads and names a known one, so swapping
+    # Ollama for Anthropic does not fail the suite.
+    assert cf.screener.backend in {"ollama", "anthropic"}
+    assert cf.writer.backend in {"ollama", "anthropic"}
+    assert cf.critic.backend in {"ollama", "anthropic"}
     assert resolve_resume_path(cf).is_file()
 
 
