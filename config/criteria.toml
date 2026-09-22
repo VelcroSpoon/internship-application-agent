@@ -43,12 +43,16 @@ pattern = "\\bU\\.?S\\.? citizen(ship)?\\b.{0,20}\\brequired\\b"
 title_patterns = ["\\bintern(ship)?\\b", "\\bco-?op\\b", "summer 20\\d\\d", "\\bnew grad\\b"]
 
 [screener]
-# Was 'ollama' with qwen2.5:3b, which ran free but echoed lists from its prompt
-# back as findings and took ~23s per posting on CPU. Haiku is about a tenth of
-# a cent per posting and reads the posting instead of the prompt. Switch back
-# by restoring backend = "ollama" and model = "qwen2.5:3b".
-backend = "anthropic"
-model = "claude-haiku-4-5"
+# Local and free, but a coarse filter: this 3B model echoes lists from its own
+# prompt back as findings, and takes ~23s per posting on CPU. The better option
+# needs an Anthropic credential; switch with:
+#   backend = "anthropic"
+#   model = "claude-haiku-4-5"
+# which reads the posting rather than the prompt, at about a tenth of a cent
+# each. The title pre-filter below means only a handful reach the model either
+# way.
+backend = "ollama"
+model = "qwen2.5:3b"
 ollama_host = "http://localhost:11434"
 # Postings are truncated to this many characters before prompting. Greenhouse
 # descriptions run 7-10k characters and the requirements are almost always in
