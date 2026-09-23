@@ -41,3 +41,7 @@ exclude = ["internship_agent/agents/critic.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # Raised inside Starlette's own TestClient, not by this project; nothing to fix here.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
