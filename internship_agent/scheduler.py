@@ -12,6 +12,8 @@ thread and sqlite3 connections are not safe to share across threads.
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -46,6 +48,7 @@ def run_discovery(
     criteria_path: Path = DEFAULT_CRITERIA_PATH,
     client: httpx.Client | None = None,
     screener_backend: StructuredLLM | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, int]:
     """Scout, then screen. Returns counts; never raises into the scheduler."""
     cfg = load_config(config_path)
@@ -56,7 +59,11 @@ def run_discovery(
     client = client or httpx.Client(follow_redirects=False)
     try:
         scout = run_scout(
-            conn, build_sources(cfg.scout), client=client, delay_s=cfg.scout.delay_seconds
+            conn,
+            build_sources(cfg.scout),
+            client=client,
+            delay_s=cfg.scout.delay_seconds,
+            sleep=sleep,
         )
         counts |= {f"scout_{k}": v for k, v in scout.as_dict().items()}
 

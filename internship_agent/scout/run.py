@@ -14,6 +14,11 @@ Upsert resolution order for an incoming record:
 
 Each source is one transaction. A source that raises is logged and skipped;
 the run continues with the next one.
+
+A transient failure (no network, a timeout, a 5xx, a 429) is retried after a
+pause before the board is given up for the night. Anything that asking again
+cannot fix, such as a 404 for a wrong board token or a robots.txt refusal,
+fails at once.
 """
 
 from __future__ import annotations
@@ -33,6 +38,19 @@ from internship_agent.scout.base import Source
 from internship_agent.scout.models import PostingRecord
 
 log = logging.getLogger(__name__)
+
+# Pauses before each retry. Long enough to ride out a DNS drop or a brief
+# outage, short enough that the nightly run still finishes promptly.
+RETRY_DELAYS: tuple[float, ...] = (15.0, 60.0)
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code >= 500 or code == 429
+    return False
 
 
 @dataclass
@@ -65,7 +83,7 @@ def run_scout(
         if i > 0:
             sleep(delay_s)
         try:
-            records = source.fetch(client)
+            records = _fetch_with_retry(source, client, sleep, conn, ts)
         except Exception as exc:  # any one board failing must not kill the nightly run
             log.warning("scout: source %s failed: %s", source.name, exc)
             summary.errors += 1
@@ -89,6 +107,34 @@ def run_scout(
 
     log_event(conn, "scout.run_finished", payload=summary.as_dict(), ts=ts)
     return summary
+
+
+def _fetch_with_retry(
+    source: Source,
+    client: httpx.Client,
+    sleep: Callable[[float], None],
+    conn: sqlite3.Connection,
+    ts: str,
+) -> list[PostingRecord]:
+    for attempt, delay in enumerate((*RETRY_DELAYS, None), start=1):
+        try:
+            return source.fetch(client)
+        except Exception as exc:
+            if delay is None or not _is_transient(exc):
+                raise
+            log.warning("scout: %s attempt %d failed, retrying: %s", source.name, attempt, exc)
+            log_event(
+                conn,
+                "scout.source_retry",
+                payload={
+                    "source": source.name,
+                    "attempt": attempt,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                ts=ts,
+            )
+            sleep(delay)
+    raise AssertionError("unreachable")  # the last attempt either returns or raises
 
 
 def upsert_posting(conn: sqlite3.Connection, rec: PostingRecord, ts: str) -> str:

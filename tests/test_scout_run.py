@@ -10,7 +10,7 @@ import pytest
 from internship_agent.db.connection import connect
 from internship_agent.db.migrate import migrate
 from internship_agent.scout.models import PostingRecord
-from internship_agent.scout.run import run_scout
+from internship_agent.scout.run import RETRY_DELAYS, run_scout
 
 
 class FakeSource:
@@ -179,3 +179,83 @@ def test_sleeps_between_sources_but_not_after_the_last(conn, client):
     _run(conn, client, sources, delay_s=2.5, sleep=slept.append)
 
     assert slept == [2.5, 2.5]
+
+
+# --- retries ----------------------------------------------------------------
+
+
+class FlakySource:
+    """Raises the scripted errors in order, then returns records."""
+
+    def __init__(self, name: str, errors: list[Exception], records: list[PostingRecord]):
+        self.name = name
+        self._errors = list(errors)
+        self._records = records
+        self.calls = 0
+
+    def fetch(self, client: httpx.Client) -> list[PostingRecord]:
+        self.calls += 1
+        if self._errors:
+            raise self._errors.pop(0)
+        return self._records
+
+
+def _status_error(code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://boards-api.greenhouse.io/v1/boards/x/jobs")
+    return httpx.HTTPStatusError(
+        f"{code}", request=request, response=httpx.Response(code, request=request)
+    )
+
+
+def test_a_network_blip_is_retried_and_the_board_still_arrives(conn, client):
+    """A DNS failure at 3am used to lose that board until the next night."""
+    source = FlakySource("greenhouse:scaleai", [httpx.ConnectError("dns")], THREE)
+    slept: list[float] = []
+
+    summary = _run(conn, client, [source], sleep=slept.append)
+
+    assert source.calls == 2
+    assert summary.new == 3 and summary.errors == 0
+    assert slept == [RETRY_DELAYS[0]]
+    (payload,) = _events(conn, "scout.source_retry")
+    assert payload["attempt"] == 1 and "dns" in payload["error"]
+
+
+def test_a_server_error_is_retried(conn, client):
+    source = FlakySource("greenhouse:scaleai", [_status_error(503)], THREE)
+
+    summary = _run(conn, client, [source])
+
+    assert source.calls == 2 and summary.new == 3
+
+
+def test_a_board_that_stays_down_fails_after_the_last_retry(conn, client):
+    errors = [httpx.ConnectError("down")] * (len(RETRY_DELAYS) + 1)
+    source = FlakySource("greenhouse:scaleai", errors, THREE)
+
+    summary = _run(conn, client, [source])
+
+    assert source.calls == len(RETRY_DELAYS) + 1
+    assert summary.errors == 1 and summary.new == 0
+    assert len(_events(conn, "scout.source_retry")) == len(RETRY_DELAYS)
+    assert len(_events(conn, "scout.source_failed")) == 1
+
+
+def test_a_client_error_is_not_retried(conn, client):
+    """A 404 means the board token is wrong. Asking again will not fix it."""
+    source = FlakySource("greenhouse:nope", [_status_error(404)], THREE)
+
+    summary = _run(conn, client, [source])
+
+    assert source.calls == 1 and summary.errors == 1
+    assert _events(conn, "scout.source_retry") == []
+
+
+def test_robots_refusal_is_not_retried(conn, client):
+    from internship_agent.scout.greenhouse import RobotsDisallowed
+
+    source = FlakySource("greenhouse:scaleai", [RobotsDisallowed("no")], THREE)
+
+    summary = _run(conn, client, [source])
+
+    assert source.calls == 1 and summary.errors == 1

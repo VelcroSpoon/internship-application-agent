@@ -169,10 +169,15 @@ def test_a_dead_board_degrades_at_the_scout_layer_not_the_job(paths):
         criteria_path=criteria,
         client=httpx.Client(transport=httpx.MockTransport(broken)),
         screener_backend=FakeLLM([]),
+        sleep=lambda _: None,  # the scout retries a dead board; do not wait for it
     )
 
     assert counts["scout_errors"] == 1 and counts["scout_new"] == 0
     conn = connect(db)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'scout.source_retry'").fetchone()[0]
+        == 2
+    )
     assert (
         conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'scout.source_failed'").fetchone()[0]
         == 1
