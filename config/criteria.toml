@@ -40,7 +40,17 @@ pattern = "\\bU\\.?S\\.? citizen(ship)?\\b.{0,20}\\brequired\\b"
 # Case-insensitive regexes. A posting whose title matches NONE of these gets a
 # zero-score screening row from the 'prefilter' model and never reaches the
 # LLM. Empty list = screen every posting (slow on CPU-only machines).
-title_patterns = ["\\bintern(ship)?\\b", "\\bco-?op\\b", "summer 20\\d\\d", "\\bnew grad\\b"]
+# Audited 2026-09-22 against 3,652 real titles from the configured boards.
+title_patterns = [
+    "\\bintern(ship)?s?\\b",   # intern, interns, internship, internships
+    "\\bco-?op\\b",
+    "summer 20\\d\\d",
+    "\\bnew grad\\b",
+    "\\bearly[- ]career\\b",
+    "\\bfellows? program\\b",  # e.g. Anthropic Fellows Program; not Scale's contractor network
+    "\\bstagiaire\\b",         # French for intern: Lyft posts its Montreal roles in French
+    "\\b[ée]t[ée] 20\\d\\d",   # French for "summer 2027"
+]
 
 [screener]
 # Local and free, but a coarse filter: this 3B model echoes lists from its own

@@ -158,3 +158,49 @@ def test_shipped_criteria_has_a_writer_section():
 
     cf = load_criteria(DEFAULT_CRITERIA_PATH)
     assert cf.writer.model
+
+
+# --- the shipped title pre-filter, against real titles -----------------------
+# Collected from the eleven configured boards on 2026-09-22. Each MISSED title
+# was being dropped before any model saw it.
+
+
+SHOULD_PASS = [
+    "Software Engineering Intern (Summer 2027)",
+    "Applied Science Intern",
+    # Lyft posts its Montreal internships in French. Stagiaire = intern.
+    "Développeur Logiciels (Stagiaire), Backend (l'été 2027 - Montreal)",
+    "Développeur Logiciels (Stagiaire), Automatisation des tests (l'été 2027)",
+    "Software Engineer, Early Career — Immediate Start",
+    "Anthropic Fellows Program, ML Systems & Reinforcement Learning",
+    "2027 Software Engineering Internships",  # plural used to slip through
+    "Machine Learning Interns",
+    "Software Engineer - New Grad",
+]
+
+SHOULD_NOT_PASS = [
+    "Head of International Security",
+    "Internal Audit - Treasury",
+    "Administrative Business Partner, Office of the President",
+    "University Recruiting Manager",
+    # Scale's contractor expert network, not an internship or fellowship program.
+    "SWE Fellow - Human Frontier Collective (Canada)",
+    "Senior Software Engineer - Database Engine Internals",
+    "Staff Software Engineer, Platform",
+]
+
+
+def _prefilter():
+    from internship_agent.config import DEFAULT_CRITERIA_PATH, load_criteria
+
+    return load_criteria(DEFAULT_CRITERIA_PATH).prefilter.compiled()
+
+
+@pytest.mark.parametrize("title", SHOULD_PASS)
+def test_shipped_prefilter_passes_real_early_career_titles(title):
+    assert any(p.search(title) for p in _prefilter()), title
+
+
+@pytest.mark.parametrize("title", SHOULD_NOT_PASS)
+def test_shipped_prefilter_rejects_real_senior_and_noise_titles(title):
+    assert not any(p.search(title) for p in _prefilter()), title
