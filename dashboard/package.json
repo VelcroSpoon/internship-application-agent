@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/"
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/",
+    "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
     "diff": "^9.0.0",

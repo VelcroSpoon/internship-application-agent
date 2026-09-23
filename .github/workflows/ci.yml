@@ -12,7 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # setup-uv publishes exact tags only; there is no floating v10.
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
@@ -32,5 +33,7 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
       - run: npm test
-      - run: npx tsc --noEmit
+      # Generates the route types (PageProps, LayoutProps) before typechecking;
+      # without them a clean checkout fails where a built one passes.
+      - run: npm run typecheck
       - run: npm run build

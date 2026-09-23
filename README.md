@@ -63,11 +63,33 @@ uv run python -m internship_agent loop run --posting 154
 uv run python -m internship_agent applications show --id 1
 ```
 
-The API and the nightly scheduler:
+The API, with the nightly scheduler running inside it:
 
 ```bash
 uv run python -m internship_agent serve
 ```
+
+That scheduler only fires while `serve` is running. To run the nightly job
+without keeping a terminal open, have the operating system call the same job
+as one command:
+
+```bash
+uv run python -m internship_agent discover run   # scout every board, then screen what is new
+```
+
+It never drafts. On Windows, register it with Task Scheduler; a laptop that is
+asleep at 3am runs it on wake:
+
+```powershell
+$repo = "C:\path\to\internship-application-agent"
+$action = New-ScheduledTaskAction -Execute "uv" -Argument "--directory `"$repo`" run python -m internship_agent discover run"
+Register-ScheduledTask -TaskName "InternshipAgentDiscovery" -Action $action `
+  -Trigger (New-ScheduledTaskTrigger -Daily -At 3am) `
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable)
+```
+
+The local Screener needs Ollama running at that hour; its installer adds it to
+the Startup folder, so it runs whenever you are logged in.
 
 The dashboard, in a second terminal, then open `http://localhost:3000`:
 
@@ -224,13 +246,27 @@ The ones worth being able to defend:
 - Open the dashboard at `localhost`. `next dev` refuses its own client resources
   from an unrecognised host and leaves the page rendered but dead;
   `allowedDevOrigins` covers `127.0.0.1` as well.
+- The title pre-filter is regexes, so it only knows the languages it was written
+  for. It covers English and French (Lyft posts its Montreal internships as
+  "Stagiaire ... l'été 2027"); a board posting in another language needs its own
+  pattern. The patterns are pinned by tests against real titles.
+- The spec's dedupe key collapses distinct postings with the same company,
+  title and location. The first eleven-board scout logged 53 such collisions,
+  none of them internships; each is recorded as a `posting.dedupe_collision`
+  event.
 
 ## Tests
 
 ```bash
 uv run pytest
 uv run ruff check .
+cd dashboard && npm test
 ```
+
+CI runs all of it, plus the dashboard's typecheck and production build, on every
+push to `main` and every pull request. The dashboard tests cover the review
+page's logic (excerpt matching, bullet diffing, posting age, clipboard text)
+using Node's built-in test runner, so no test framework is installed.
 
 The suite makes no network calls and spends no money. It covers every stop
 condition against hand-built critique histories, including a blocker overriding
