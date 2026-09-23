@@ -1,0 +1,15 @@
+{
+  "//": "Compiles lib/ and tests/ to CommonJS for Node's built-in test runner, so the dashboard's logic is tested without adding a test framework dependency.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".test-build",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["tests/**/*.test.ts"]
+}

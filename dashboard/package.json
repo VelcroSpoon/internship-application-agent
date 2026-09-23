@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/"
   },
   "dependencies": {
     "diff": "^9.0.0",

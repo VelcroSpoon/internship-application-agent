@@ -1,4 +1,4 @@
-import type { Finding } from "./types";
+import type { Finding, RoundDetail } from "./types";
 
 /**
  * Mapping a critique's verbatim excerpts back onto the draft text.
@@ -77,4 +77,18 @@ export function assignFindings(
   });
 
   return { byBlock, unmatched };
+}
+
+/**
+ * The blocks of a draft that a finding can be highlighted in: each bullet on
+ * its own, then the cover letter. Bullets are separate blocks because each is
+ * rendered separately; matching against all of them joined together counted
+ * an excerpt spanning two bullets as found, then no single bullet could show
+ * it, and the finding offered a jump to nothing.
+ */
+export function draftBlocks(round: Pick<RoundDetail, "bullets" | "cover_letter">) {
+  return [
+    ...round.bullets.map((bullet, i) => ({ key: `bullet-${i}`, text: bullet.text })),
+    { key: "letter", text: round.cover_letter },
+  ];
 }

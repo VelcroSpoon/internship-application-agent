@@ -67,7 +67,7 @@ export default function DraftBody({
                   <p className="prose-draft">
                     <Highlighted
                       text={bullet.text}
-                      marks={marksWithin(assignment.byBlock.bullets ?? [], bullet.text)}
+                      marks={assignment.byBlock[`bullet-${i}`] ?? []}
                     />
                   </p>
                   <p className="mt-0.5 text-2xs text-faint">
@@ -88,12 +88,6 @@ export default function DraftBody({
       </div>
     </div>
   );
-}
-
-/** Marks were assigned against the joined bullets block; keep the ones that
- *  actually fall inside this single bullet. */
-function marksWithin(marks: Mark[], bulletText: string): Mark[] {
-  return marks.filter((mark) => bulletText.includes(mark.excerpt.trim()));
 }
 
 function Highlighted({ text, marks }: { text: string; marks: Mark[] }) {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { assignFindings } from "@/lib/highlight";
+import { assignFindings, draftBlocks } from "@/lib/highlight";
 import type { ApplicationDetail } from "@/lib/types";
 import CritiquePanel from "./CritiquePanel";
 import { DiffLegend } from "./DiffText";
@@ -29,13 +29,7 @@ export default function ReviewClient({ application }: { application: Application
 
   const assignment = useMemo(() => {
     if (!round) return { byBlock: {}, unmatched: new Set<number>() };
-    return assignFindings(
-      [
-        { key: "bullets", text: round.bullets.map((b) => b.text).join("\n") },
-        { key: "letter", text: round.cover_letter },
-      ],
-      round.critique?.findings ?? [],
-    );
+    return assignFindings(draftBlocks(round), round.critique?.findings ?? []);
   }, [round]);
 
   /** Jumping only makes sense against the clean text, so turn the diff off
