@@ -56,19 +56,6 @@ def test_latest_screening_wins(conn):
     assert queue_postings(conn, threshold=70) == []
 
 
-def test_postings_with_an_application_are_excluded(conn):
-    a, b = posting(conn, "A"), posting(conn, "B")
-    screen(conn, a, 90, TS)
-    screen(conn, b, 90, TS)
-    conn.execute(
-        "INSERT INTO applications (posting_id, status, created_at, updated_at) "
-        "VALUES (?, 'drafting', ?, ?)",
-        (a, TS, TS),
-    )
-
-    assert ids(queue_postings(conn, threshold=70)) == [b]
-
-
 def test_dismissed_postings_are_excluded(conn):
     a = posting(conn, "A", status="dismissed")
     screen(conn, a, 90, TS)
@@ -89,3 +76,35 @@ def test_queue_rows_carry_what_the_dashboard_needs(conn):
     (row,) = queue_postings(conn, threshold=70)
     assert row["company"] == "Co" and row["title"] == "A" and row["url"] == "u"
     assert row["fit_score"] == 88 and row["reason"] == "r" and row["screened_at"] == TS
+
+
+def test_an_application_with_no_drafts_does_not_hide_the_posting(conn):
+    """A drafting run that fails before round 0 leaves an application row with
+    nothing in it. Nothing was drafted, so the posting has not been worked on
+    and must stay in the queue. It used to vanish from the queue for good."""
+    a = posting(conn, "A")
+    screen(conn, a, 90, TS)
+    conn.execute(
+        "INSERT INTO applications (posting_id, status, created_at, updated_at) "
+        "VALUES (?, 'drafting', ?, ?)",
+        (a, TS, TS),
+    )
+
+    assert ids(queue_postings(conn, threshold=70)) == [a]
+
+
+def test_an_application_with_a_draft_does_hide_the_posting(conn):
+    a = posting(conn, "A")
+    screen(conn, a, 90, TS)
+    cur = conn.execute(
+        "INSERT INTO applications (posting_id, status, created_at, updated_at) "
+        "VALUES (?, 'drafting', ?, ?)",
+        (a, TS, TS),
+    )
+    conn.execute(
+        "INSERT INTO drafts (application_id, round_index, bullets_json, cover_letter, "
+        "created_at) VALUES (?, 0, '[]', 'x', ?)",
+        (cur.lastrowid, TS),
+    )
+
+    assert queue_postings(conn, threshold=70) == []

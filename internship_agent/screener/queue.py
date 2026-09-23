@@ -23,7 +23,12 @@ WHERE p.status = 'active'
       LIMIT 1
   )
   AND s.fit_score >= :threshold
-  AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.posting_id = p.id)
+  -- Hidden once drafting has produced something. An application with no
+  -- drafts is a run that failed before round 0; the posting is still unworked.
+  AND NOT EXISTS (
+      SELECT 1 FROM applications a JOIN drafts d ON d.application_id = a.id
+      WHERE a.posting_id = p.id
+  )
 ORDER BY s.fit_score DESC, p.first_seen_at DESC, p.id DESC
 """
 

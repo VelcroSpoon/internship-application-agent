@@ -442,3 +442,18 @@ def test_editing_a_decided_application_is_a_conflict(paths):
 
 def test_editing_an_unknown_application_is_a_404(paths):
     assert make_client(paths).post("/applications/1/drafts", json=_edit_body()).status_code == 404
+
+
+def test_a_failed_first_draft_leaves_the_posting_startable(paths):
+    """Without a key the loop stops before round 0 and leaves an empty
+    application. The posting page must offer drafting again, not link to a
+    review of nothing, and the posting must still be in the queue."""
+    from internship_agent.llm.base import LLMTransportError
+
+    pid = posting_id_for(paths, INTERN_EXTERNAL_ID)
+    screen(paths, pid, 88)
+    client = make_client(paths, writer=FakeLLM([LLMTransportError("no credential")]))
+    client.post("/loop/run", json={"posting_id": pid})
+
+    assert client.get(f"/postings/{pid}").json()["application"] is None
+    assert [q["posting_id"] for q in client.get("/queue").json()] == [pid]

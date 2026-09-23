@@ -382,7 +382,11 @@ def _latest_screening(conn: sqlite3.Connection, posting_id: int) -> ScreeningOut
 
 def _application_ref(conn: sqlite3.Connection, posting_id: int) -> ApplicationRef | None:
     row = conn.execute(
-        "SELECT id, status FROM applications WHERE posting_id = ? ORDER BY id LIMIT 1",
+        # Only an application with a draft counts: an empty one is a failed
+        # round 0, and the posting page should offer drafting again.
+        "SELECT a.id, a.status FROM applications a WHERE a.posting_id = ? "
+        "AND EXISTS (SELECT 1 FROM drafts d WHERE d.application_id = a.id) "
+        "ORDER BY a.id LIMIT 1",
         (posting_id,),
     ).fetchone()
     return None if row is None else ApplicationRef(application_id=row["id"], status=row["status"])
