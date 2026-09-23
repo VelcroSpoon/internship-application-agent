@@ -14,9 +14,46 @@ delay_seconds = 3.0
 # Greenhouse boards. `board` is the token in the public URL:
 # https://job-boards.greenhouse.io/<board>/ . `company` overrides the name the
 # API reports, useful when a board token is not a readable name.
+#
+# Chosen on 2026-09-22 by probing each board's live API: kept if it lists
+# engineering or ML internships now, or is an AI lab whose internships are
+# seasonal. Boards whose only interns were sales, design or accounting were
+# left out (samsara). Add or remove freely; unknown boards fail loudly as a
+# 404 in the nightly log rather than silently.
+
 [[scout.greenhouse]]
 board = "scaleai"
 company = "Scale AI"
+
+[[scout.greenhouse]]
+board = "anthropic"   # no internships listed on 2026-09-22; they post seasonally
+
+[[scout.greenhouse]]
+board = "databricks"
+
+[[scout.greenhouse]]
+board = "datadog"     # applied science internships
+
+[[scout.greenhouse]]
+board = "stripe"
+
+[[scout.greenhouse]]
+board = "robinhood"   # some internships list Toronto or remote
+
+[[scout.greenhouse]]
+board = "lyft"        # most internships here list Toronto or remote
+
+[[scout.greenhouse]]
+board = "dropbox"     # remote internships
+
+[[scout.greenhouse]]
+board = "coinbase"
+
+[[scout.greenhouse]]
+board = "figma"
+
+[[scout.greenhouse]]
+board = "duolingo"
 
 [scheduler]
 # The nightly discovery run: scout every board, then screen what is new.
