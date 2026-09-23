@@ -406,6 +406,36 @@ def cmd_serve(args: argparse.Namespace, **_: object) -> int:
     return 0
 
 
+# --- discover (the nightly job as one command) -----------------------------------
+
+
+def cmd_discover_run(
+    args: argparse.Namespace,
+    client: httpx.Client | None = None,
+    backend: StructuredLLM | None = None,
+    **_: object,
+) -> int:
+    """Scout then screen, exactly as the in-process scheduler does. That scheduler
+    only fires while `serve` is running; this lets the operating system run the
+    job instead. Discovery only: it never drafts."""
+    from internship_agent.scheduler import run_discovery
+
+    args.db.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(args.db)
+    migrate(conn)
+    conn.close()
+    counts = run_discovery(
+        db_path=args.db,
+        config_path=args.config,
+        criteria_path=args.criteria,
+        client=client,
+        screener_backend=backend,
+    )
+    print("discover: " + " ".join(f"{k}={v}" for k, v in counts.items()))
+    sources = counts.get("scout_sources", 0)
+    return 1 if not counts or (sources and counts.get("scout_errors") == sources) else 0
+
+
 # --- evals ----------------------------------------------------------------------
 
 DEFAULT_EVAL_POSTINGS = (
@@ -584,6 +614,13 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--id", type=int, required=True)
         sub.add_argument("--note", default="")
         sub.set_defaults(func=cmd_applications_decide)
+
+    discover = groups.add_parser(
+        "discover", help="the nightly job: scout, then screen"
+    ).add_subparsers(dest="command", required=True)
+    drun = discover.add_parser("run", parents=[common, criteria_opt])
+    drun.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    drun.set_defaults(func=cmd_discover_run)
 
     from internship_agent.evals.run import DEFAULT_CASSETTE, DEFAULT_RESULTS
 

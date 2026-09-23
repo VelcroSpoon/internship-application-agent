@@ -456,3 +456,86 @@ def test_evals_record_refuses_to_overwrite_a_paid_for_cassette(tmp_path: Path, c
 
     assert code == 1
     assert "--force" in capsys.readouterr().err
+
+
+# --- discover (the nightly job, runnable without the API server) -------------
+
+
+def test_discover_run_scouts_and_screens_in_one_command(tmp_path: Path, capsys):
+    """The in-process scheduler only fires while `serve` is running. This is the
+    same job as a plain command, so the operating system can schedule it."""
+    from internship_agent.screener.models import Screening
+    from tests.fakes import FakeLLM
+
+    db = tmp_path / "agent.db"
+    cfg = _write_config(tmp_path)
+    criteria = _write_criteria(tmp_path)
+    screener = FakeLLM(
+        [
+            Screening(
+                fit_score=80,
+                reason="fits",
+                is_internship=True,
+                matched_requirements=[],
+                missing_requirements=[],
+            )
+        ]
+        * 4
+    )
+
+    code = main(
+        ["discover", "run", "--db", str(db), "--config", str(cfg), "--criteria", str(criteria)],
+        client=_fixture_client(),
+        backend=screener,
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "scout_new=4" in out
+    conn = connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM screenings").fetchone()[0] == 4
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'scheduler.discovery_finished'"
+        ).fetchone()[0]
+        == 1
+    )
+    conn.close()
+
+
+def test_discover_run_never_drafts(tmp_path: Path, capsys):
+    from internship_agent.screener.models import Screening
+    from tests.fakes import FakeLLM
+
+    db = tmp_path / "agent.db"
+    screener = FakeLLM(
+        [
+            Screening(
+                fit_score=99,
+                reason="perfect",
+                is_internship=True,
+                matched_requirements=[],
+                missing_requirements=[],
+            )
+        ]
+        * 4
+    )
+
+    main(
+        [
+            "discover",
+            "run",
+            "--db",
+            str(db),
+            "--config",
+            str(_write_config(tmp_path)),
+            "--criteria",
+            str(_write_criteria(tmp_path)),
+        ],
+        client=_fixture_client(),
+        backend=screener,
+    )
+
+    conn = connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == 0
+    conn.close()
